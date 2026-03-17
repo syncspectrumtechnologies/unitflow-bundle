@@ -1,0 +1,17 @@
+const express = require('express');
+const opsAuthMiddleware = require('../middlewares/opsAuthMiddleware');
+const authController = require('../controllers/opsAuthController');
+const controller = require('../controllers/opsController');
+
+const router = express.Router();
+router.post('/auth/login', authController.login);
+router.use(opsAuthMiddleware);
+router.get('/tenants', controller.listTenants);
+router.get('/tenants/:tenantId', controller.getTenant);
+router.post('/tenants/:tenantId/suspend', controller.suspendTenant);
+router.post('/tenants/:tenantId/reactivate', controller.reactivateTenant);
+router.post('/tenants/:tenantId/grace', controller.graceTenant);
+router.get('/notifications', controller.listNotifications);
+router.post('/releases', controller.createRelease);
+router.patch('/releases/:releaseId', controller.updateRelease);
+module.exports = router;
