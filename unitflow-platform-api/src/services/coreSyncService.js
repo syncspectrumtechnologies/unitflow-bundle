@@ -29,4 +29,9 @@ async function syncTenantConfig(tenantId, payload) {
   return res.data;
 }
 
-module.exports = { provisionTenant, syncTenantStatus, syncTenantConfig };
+async function authenticateRuntimeUser(payload) {
+  const res = await client().post('/internal/platform/runtime/authenticate', payload);
+  return res.data;
+}
+
+module.exports = { provisionTenant, syncTenantStatus, syncTenantConfig, authenticateRuntimeUser };

@@ -5,18 +5,22 @@ const httpError = require('../utils/httpError');
 const { signAccountToken } = require('../utils/security');
 const { createVerification, verifyCode } = require('../services/verificationService');
 const { createAudit } = require('../services/auditService');
+const { authenticateRuntimeUser } = require('../services/coreSyncService');
+const { upsertRuntimeDevice, createRuntimeSession } = require('../services/runtimeAccessService');
 
 exports.signup = async (req, res, next) => {
   try {
     const { email, phone, name, password } = req.body || {};
     if (!email || !name || !password) throw httpError(400, 'email, name, and password are required');
 
-    const existing = await prisma.account.findFirst({ where: { OR: [{ email }, ...(phone ? [{ phone }] : [])] } });
+    const normalizedEmail = String(email).toLowerCase().trim();
+    const normalizedPhone = phone ? String(phone).trim() : null;
+    const existing = await prisma.account.findFirst({ where: { OR: [{ email: normalizedEmail }, ...(normalizedPhone ? [{ phone: normalizedPhone }] : [])] } });
     if (existing) throw httpError(409, 'An account with this email or phone already exists');
 
     const passwordHash = await bcrypt.hash(String(password), 10);
     const account = await prisma.account.create({
-      data: { email: String(email).toLowerCase().trim(), phone: phone ? String(phone).trim() : null, name: String(name).trim(), password_hash: passwordHash }
+      data: { email: normalizedEmail, phone: normalizedPhone, name: String(name).trim(), password_hash: passwordHash }
     });
 
     const verification = await createVerification({
@@ -103,6 +107,100 @@ exports.login = async (req, res, next) => {
     await prisma.account.update({ where: { id: account.id }, data: { last_login_at: new Date() } });
 
     return res.json({ ok: true, token, account: { id: account.id, email: account.email, name: account.name } });
+  } catch (error) {
+    next(error);
+  }
+};
+
+exports.runtimeLogin = async (req, res, next) => {
+  try {
+    const {
+      email,
+      password,
+      device_fingerprint,
+      device_name,
+      platform,
+      os_version,
+      app_version,
+      force_takeover = false
+    } = req.body || {};
+
+    if (!email || !password) throw httpError(400, 'email and password are required');
+    if (!device_fingerprint) throw httpError(400, 'device_fingerprint is required');
+
+    let runtimeAuth;
+    try {
+      runtimeAuth = await authenticateRuntimeUser({ email: String(email).toLowerCase().trim(), password: String(password) });
+    } catch (error) {
+      const status = error?.response?.status;
+      const remoteMessage = error?.response?.data?.message;
+      if (status === 401) throw httpError(401, 'Invalid credentials');
+      if (status === 403) throw httpError(403, remoteMessage || 'Runtime user is not allowed to login');
+      throw httpError(status || 502, remoteMessage || 'Runtime authentication bridge failed');
+    }
+
+    const runtimeUser = runtimeAuth?.user;
+    if (!runtimeUser) throw httpError(401, 'Invalid credentials');
+
+    const tenant = await prisma.tenant.findFirst({
+      where: { runtime_company_id: runtimeUser.company_id },
+      include: {
+        subscriptions: { include: { plan: true }, orderBy: { created_at: 'desc' }, take: 1 },
+        devices: true
+      }
+    });
+    if (!tenant) throw httpError(404, 'Tenant not found for runtime user');
+
+    const { device, latestSubscription } = await upsertRuntimeDevice({
+      tenant,
+      accountId: tenant.owner_account_id,
+      deviceFingerprint: device_fingerprint,
+      deviceName: device_name,
+      platform,
+      osVersion: os_version,
+      appVersion: app_version,
+      forceTakeover: force_takeover
+    });
+
+    const { token, session, plan, role } = await createRuntimeSession({
+      tenant,
+      accountId: tenant.owner_account_id,
+      deviceId: device.id,
+      runtimeUser
+    });
+
+    await createAudit({
+      actorType: 'RUNTIME_USER',
+      actorId: runtimeUser.id,
+      tenantId: tenant.id,
+      entityType: 'runtime_session',
+      entityId: session.id,
+      action: 'runtime.login',
+      metadata: { device_id: device.id, plan }
+    });
+
+    return res.json({
+      ok: true,
+      token,
+      expires_in: env.runtimeJwtExpiresIn,
+      tenant: {
+        id: tenant.id,
+        display_name: tenant.display_name,
+        lifecycle_status: tenant.lifecycle_status
+      },
+      user: {
+        id: runtimeUser.id,
+        email: runtimeUser.email,
+        name: runtimeUser.name,
+        company_id: runtimeUser.company_id,
+        is_admin: runtimeUser.is_admin,
+        roles: runtimeUser.roles,
+        role
+      },
+      device,
+      runtime_session: { id: session.id, expires_at: session.expires_at },
+      plan
+    });
   } catch (error) {
     next(error);
   }

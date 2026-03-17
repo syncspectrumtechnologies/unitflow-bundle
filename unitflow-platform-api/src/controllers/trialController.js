@@ -69,7 +69,7 @@ exports.startTrial = async (req, res, next) => {
     });
 
     try {
-      await provisionTenant({
+      const provisioned = await provisionTenant({
         tenant_id: result.tenant.id,
         company: {
           name: display_name,
@@ -108,6 +108,7 @@ exports.startTrial = async (req, res, next) => {
         where: { id: result.tenant.id },
         data: {
           runtime_company_id: result.tenant.id,
+          runtime_owner_user_id: provisioned.admin_user_id || null,
           runtime_provision_status: 'READY',
           runtime_last_synced_at: new Date(),
           onboarding_status: 'READY',

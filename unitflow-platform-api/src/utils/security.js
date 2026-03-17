@@ -1,5 +1,6 @@
 const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
+const { env } = require('../config/env');
 
 function newJti() {
   return crypto.randomBytes(16).toString('hex');
@@ -19,7 +20,11 @@ function signOpsToken(payload, expiresIn) {
 
 function signRuntimeToken(payload, expiresIn) {
   const jti = newJti();
-  const token = jwt.sign({ ...payload, jti, token_type: 'runtime' }, process.env.JWT_SECRET, { expiresIn });
+  const signOptions = { expiresIn };
+  if (env.runtimeJwtIssuer) signOptions.issuer = env.runtimeJwtIssuer;
+  if (env.runtimeJwtAudience) signOptions.audience = env.runtimeJwtAudience;
+
+  const token = jwt.sign({ ...payload, jti, token_type: 'runtime' }, env.runtimeJwtSecret, signOptions);
   return { token, jti };
 }
 

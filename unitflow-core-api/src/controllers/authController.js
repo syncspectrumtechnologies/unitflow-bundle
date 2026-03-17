@@ -1,4 +1,5 @@
 const prisma = require("../config/db");
+const { env } = require("../config/env");
 const { comparePassword, hashPassword } = require("../utils/password");
 const { signToken } = require("../utils/jwt");
 const logActivity = require("../utils/activityLogger");
@@ -10,6 +11,13 @@ const {
 } = require("../services/passwordResetService");
 
 exports.login = async (req, res) => {
+  if (!env.allowDirectCoreLogin) {
+    return res.status(403).json({
+      message: "Direct core login is disabled. Use the Platform API runtime login flow.",
+      code: "DIRECT_CORE_LOGIN_DISABLED"
+    });
+  }
+
   const { email, password } = req.body;
 
   if (!email || !password) {

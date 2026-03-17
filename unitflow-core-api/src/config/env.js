@@ -25,23 +25,10 @@ function normalizeNodeEnv(value) {
   return "development";
 }
 
-function validate() {
-  const issues = [];
-  if (!process.env.DATABASE_URL) issues.push("DATABASE_URL is required");
-  if (!process.env.JWT_SECRET) issues.push("JWT_SECRET is required");
-  if (String(process.env.JWT_SECRET || "").length > 0 && String(process.env.JWT_SECRET || "").length < 32) {
-    issues.push("JWT_SECRET must be at least 32 characters");
-  }
-  if (issues.length) {
-    const err = new Error(`Invalid environment configuration: ${issues.join("; ")}`);
-    err.name = "EnvValidationError";
-    throw err;
-  }
-}
-
 const nodeEnv = normalizeNodeEnv(process.env.NODE_ENV);
 const serviceName = process.env.SERVICE_NAME || "unitflow-core-api";
 const runtimeMode = process.env.RUNTIME_MODE || "saas-shared";
+const allowDirectCoreLoginDefault = nodeEnv !== "production";
 
 const env = {
   nodeEnv,
@@ -66,8 +53,32 @@ const env = {
   idempotencyTtlSec: parseIntEnv(process.env.IDEMPOTENCY_TTL_SECONDS, 60 * 60 * 12),
   runtimeMode,
   apiClientMode: process.env.API_CLIENT_MODE || "electron-shell-over-api",
+  allowDirectCoreLogin: parseBool(process.env.ALLOW_DIRECT_CORE_LOGIN, allowDirectCoreLoginDefault),
+  platformRuntimeJwtSecret: process.env.PLATFORM_RUNTIME_JWT_SECRET || process.env.JWT_SECRET,
+  platformRuntimeJwtIssuer: process.env.PLATFORM_RUNTIME_JWT_ISSUER || "unitflow-platform-api",
+  platformRuntimeJwtAudience: process.env.PLATFORM_RUNTIME_JWT_AUDIENCE || "unitflow-core-api",
   buildFingerprint: process.env.BUILD_FINGERPRINT || crypto.createHash("sha256").update(serviceName + runtimeMode).digest("hex").slice(0, 12)
 };
+
+function validate() {
+  const issues = [];
+  if (!process.env.DATABASE_URL) issues.push("DATABASE_URL is required");
+  if (!process.env.JWT_SECRET) issues.push("JWT_SECRET is required");
+  if (String(process.env.JWT_SECRET || "").length > 0 && String(process.env.JWT_SECRET || "").length < 32) {
+    issues.push("JWT_SECRET must be at least 32 characters");
+  }
+  if (!env.allowDirectCoreLogin) {
+    if (!env.platformRuntimeJwtSecret) issues.push("PLATFORM_RUNTIME_JWT_SECRET is required when direct core login is disabled");
+    if (String(env.platformRuntimeJwtSecret || "").length > 0 && String(env.platformRuntimeJwtSecret || "").length < 32) {
+      issues.push("PLATFORM_RUNTIME_JWT_SECRET must be at least 32 characters");
+    }
+  }
+  if (issues.length) {
+    const err = new Error(`Invalid environment configuration: ${issues.join("; ")}`);
+    err.name = "EnvValidationError";
+    throw err;
+  }
+}
 
 function isOriginAllowed(origin) {
   if (!origin) return env.corsAllowNoOrigin;

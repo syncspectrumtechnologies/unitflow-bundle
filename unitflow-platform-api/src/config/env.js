@@ -20,20 +20,6 @@ function normalizeNodeEnv(value) {
   return ['production', 'development', 'test'].includes(v) ? v : 'development';
 }
 
-function validate() {
-  const issues = [];
-  if (!process.env.PLATFORM_DATABASE_URL) issues.push('PLATFORM_DATABASE_URL is required');
-  if (!process.env.JWT_SECRET || String(process.env.JWT_SECRET).length < 32) issues.push('JWT_SECRET must be at least 32 characters');
-  if (!process.env.OPS_JWT_SECRET || String(process.env.OPS_JWT_SECRET).length < 32) issues.push('OPS_JWT_SECRET must be at least 32 characters');
-  if (!process.env.CORE_API_BASE_URL) issues.push('CORE_API_BASE_URL is required');
-  if (!process.env.PLATFORM_INTERNAL_API_KEY) issues.push('PLATFORM_INTERNAL_API_KEY is required');
-  if (issues.length) {
-    const error = new Error(`Invalid platform environment: ${issues.join('; ')}`);
-    error.name = 'EnvValidationError';
-    throw error;
-  }
-}
-
 const nodeEnv = normalizeNodeEnv(process.env.NODE_ENV);
 const env = {
   nodeEnv,
@@ -51,6 +37,10 @@ const env = {
   authRateLimitMaxPer15Min: parseIntEnv(process.env.AUTH_RATE_LIMIT_MAX_PER_15_MIN, 50),
   jwtExpiresIn: process.env.JWT_EXPIRES_IN || '12h',
   opsJwtExpiresIn: process.env.OPS_JWT_EXPIRES_IN || '12h',
+  runtimeJwtExpiresIn: process.env.RUNTIME_JWT_EXPIRES_IN || process.env.JWT_EXPIRES_IN || '12h',
+  runtimeJwtSecret: process.env.PLATFORM_RUNTIME_JWT_SECRET,
+  runtimeJwtIssuer: process.env.PLATFORM_RUNTIME_JWT_ISSUER || 'unitflow-platform-api',
+  runtimeJwtAudience: process.env.PLATFORM_RUNTIME_JWT_AUDIENCE || 'unitflow-core-api',
   defaultTrialDays: parseIntEnv(process.env.DEFAULT_TRIAL_DAYS, 14),
   trialMaxLocations: parseIntEnv(process.env.TRIAL_MAX_LOCATIONS, 2),
   trialMaxUsers: parseIntEnv(process.env.TRIAL_MAX_USERS, 1),
@@ -66,6 +56,21 @@ const env = {
   paymentWebhookSecret: process.env.PAYMENT_WEBHOOK_SECRET,
   buildFingerprint: process.env.BUILD_FINGERPRINT || crypto.createHash('sha256').update('unitflow-platform-api').digest('hex').slice(0, 12)
 };
+
+function validate() {
+  const issues = [];
+  if (!process.env.PLATFORM_DATABASE_URL) issues.push('PLATFORM_DATABASE_URL is required');
+  if (!process.env.JWT_SECRET || String(process.env.JWT_SECRET).length < 32) issues.push('JWT_SECRET must be at least 32 characters');
+  if (!process.env.OPS_JWT_SECRET || String(process.env.OPS_JWT_SECRET).length < 32) issues.push('OPS_JWT_SECRET must be at least 32 characters');
+  if (!env.runtimeJwtSecret || String(env.runtimeJwtSecret).length < 32) issues.push('PLATFORM_RUNTIME_JWT_SECRET must be at least 32 characters');
+  if (!process.env.CORE_API_BASE_URL) issues.push('CORE_API_BASE_URL is required');
+  if (!process.env.PLATFORM_INTERNAL_API_KEY) issues.push('PLATFORM_INTERNAL_API_KEY is required');
+  if (issues.length) {
+    const error = new Error(`Invalid platform environment: ${issues.join('; ')}`);
+    error.name = 'EnvValidationError';
+    throw error;
+  }
+}
 
 function isOriginAllowed(origin) {
   if (!origin) return env.corsAllowNoOrigin;

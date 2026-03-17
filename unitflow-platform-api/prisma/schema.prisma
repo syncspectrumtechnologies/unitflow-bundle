@@ -143,6 +143,7 @@ model Tenant {
   onboarding_status          OnboardingStatus      @default(DRAFT)
   lifecycle_status           TenantLifecycleStatus @default(TRIAL_PENDING)
   runtime_company_id         String?               @unique
+  runtime_owner_user_id      String?
   runtime_provision_status   String?
   runtime_last_synced_at     DateTime?
   trial_started_at           DateTime?

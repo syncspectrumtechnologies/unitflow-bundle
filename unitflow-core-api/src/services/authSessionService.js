@@ -1,5 +1,6 @@
 const jwt = require("jsonwebtoken");
 const prisma = require("../config/db");
+const { env } = require("../config/env");
 
 const roleCache = new Map();
 
@@ -43,13 +44,14 @@ async function touchSessionIfNeeded(session) {
   });
 }
 
-async function authenticateToken(token, { touchSession = true } = {}) {
-  const decoded = jwt.verify(token, process.env.JWT_SECRET);
+async function loadActiveUser(decoded) {
+  const companyId = decoded.company_id || decoded.tenant_id;
+  if (!decoded.user_id || !companyId) return null;
 
   const user = await prisma.user.findFirst({
     where: {
       id: decoded.user_id,
-      company_id: decoded.company_id,
+      company_id: companyId,
       status: "ACTIVE",
       company: { is: { is_active: true } }
     },
@@ -63,6 +65,37 @@ async function authenticateToken(token, { touchSession = true } = {}) {
     }
   });
 
+  if (!user) return null;
+  const roles = await getUserRoles(user.company_id, user);
+
+  return {
+    id: user.id,
+    company_id: user.company_id,
+    is_admin: user.is_admin,
+    email: user.email,
+    name: user.name,
+    roles,
+    role: decoded.role || (user.is_admin ? "ADMIN" : roles[0] || "STAFF"),
+    jti: decoded.jti || null,
+    device_id: decoded.device_id || null,
+    account_id: decoded.account_id || null,
+    plan: decoded.plan || null,
+    token_source: decoded.token_type === "runtime" ? "platform" : "core"
+  };
+}
+
+function verifyPlatformRuntimeToken(token) {
+  const verifyOptions = {};
+  if (env.platformRuntimeJwtIssuer) verifyOptions.issuer = env.platformRuntimeJwtIssuer;
+  if (env.platformRuntimeJwtAudience) verifyOptions.audience = env.platformRuntimeJwtAudience;
+  return jwt.verify(token, env.platformRuntimeJwtSecret, verifyOptions);
+}
+
+async function authenticateCoreToken(token, { touchSession = true } = {}) {
+  if (!env.allowDirectCoreLogin) return null;
+
+  const decoded = jwt.verify(token, process.env.JWT_SECRET);
+  const user = await loadActiveUser(decoded);
   if (!user) return null;
 
   let session = null;
@@ -82,20 +115,35 @@ async function authenticateToken(token, { touchSession = true } = {}) {
     if (touchSession) await touchSessionIfNeeded(session);
   }
 
-  const roles = await getUserRoles(user.company_id, user);
+  return user;
+}
 
-  return {
-    id: user.id,
-    company_id: user.company_id,
-    is_admin: user.is_admin,
-    email: user.email,
-    name: user.name,
-    roles,
-    jti: decoded.jti || null
-  };
+async function authenticatePlatformRuntimeToken(token) {
+  const decoded = verifyPlatformRuntimeToken(token);
+  if (decoded.token_type !== "runtime") return null;
+  return loadActiveUser(decoded);
+}
+
+async function authenticateToken(token, { touchSession = true } = {}) {
+  const decoded = jwt.decode(token) || {};
+
+  if (decoded.token_type === "runtime") {
+    try {
+      return await authenticatePlatformRuntimeToken(token);
+    } catch (error) {
+      return null;
+    }
+  }
+
+  try {
+    return await authenticateCoreToken(token, { touchSession });
+  } catch (error) {
+    return null;
+  }
 }
 
 module.exports = {
   authenticateToken,
-  getUserRoles
+  getUserRoles,
+  verifyPlatformRuntimeToken
 };

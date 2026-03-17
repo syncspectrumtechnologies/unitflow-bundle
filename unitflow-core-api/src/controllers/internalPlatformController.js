@@ -55,6 +55,64 @@ async function upsertCompanyConfig(tx, companyId, payload = {}) {
   });
 }
 
+
+const { comparePassword } = require('../utils/password');
+const { getUserRoles } = require('../services/authSessionService');
+
+exports.authenticateRuntimeUser = async (req, res, next) => {
+  try {
+    const rawEmail = String(req.body?.email || '').trim().toLowerCase();
+    const password = String(req.body?.password || '');
+
+    if (!rawEmail || !password) {
+      return res.status(400).json({ message: 'email and password are required' });
+    }
+
+    const user = await prisma.user.findFirst({
+      where: {
+        email: rawEmail,
+        status: 'ACTIVE',
+        company: { is: { is_active: true } }
+      },
+      include: {
+        company: { select: { id: true, name: true, is_active: true } }
+      }
+    });
+
+    if (!user) {
+      return res.status(401).json({ message: 'Invalid credentials' });
+    }
+
+    const valid = await comparePassword(password, user.password_hash);
+    if (!valid) {
+      return res.status(401).json({ message: 'Invalid credentials' });
+    }
+
+    const roles = await getUserRoles(user.company_id, user);
+    const role = user.is_admin ? 'ADMIN' : (roles[0] || 'STAFF');
+
+    return res.json({
+      ok: true,
+      user: {
+        id: user.id,
+        company_id: user.company_id,
+        email: user.email,
+        name: user.name,
+        is_admin: user.is_admin,
+        roles,
+        role
+      },
+      company: {
+        id: user.company.id,
+        name: user.company.name,
+        is_active: user.company.is_active
+      }
+    });
+  } catch (error) {
+    return next(error);
+  }
+};
+
 exports.provisionTenant = async (req, res, next) => {
   try {
     const {
