@@ -10,7 +10,6 @@ const notFoundHandler = require('./middlewares/notFoundHandler');
 const errorHandler = require('./middlewares/errorHandler');
 
 const authRoutes = require('./routes/authRoutes');
-const trialRoutes = require('./routes/trialRoutes');
 const tenantRoutes = require('./routes/tenantRoutes');
 const subscriptionRoutes = require('./routes/subscriptionRoutes');
 const releaseRoutes = require('./routes/releaseRoutes');
@@ -54,7 +53,6 @@ app.get('/ready', async (req, res) => {
 });
 
 app.use('/auth', authLimiter, authRoutes);
-app.use('/trial', trialRoutes);
 app.use('/tenants', tenantRoutes);
 app.use('/subscriptions', subscriptionRoutes);
 app.use('/releases', releaseRoutes);

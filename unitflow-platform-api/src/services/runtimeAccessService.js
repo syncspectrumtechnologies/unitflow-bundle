@@ -19,13 +19,13 @@ function getLatestSubscription(tenant) {
 
 function assertRuntimeEligible(tenant) {
   if (!tenant) throw httpError(404, 'Tenant not found');
-  if (!['TRIAL_ACTIVE', 'ACTIVE', 'GRACE'].includes(tenant.lifecycle_status)) {
+  if (!['ACTIVE', 'GRACE'].includes(tenant.lifecycle_status)) {
     throw httpError(403, 'Tenant is not active for runtime access');
   }
 
   const latestSubscription = getLatestSubscription(tenant);
   if (!latestSubscription) throw httpError(403, 'No active subscription found');
-  if (!['TRIAL', 'ACTIVE', 'GRACE'].includes(latestSubscription.status)) {
+  if (!['ACTIVE', 'GRACE'].includes(latestSubscription.status)) {
     throw httpError(403, 'Subscription is not active for runtime access');
   }
 

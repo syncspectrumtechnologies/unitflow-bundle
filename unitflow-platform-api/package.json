@@ -1,7 +1,7 @@
 {
   "name": "unitflow-platform-api",
   "version": "1.0.0",
-  "description": "UnitFlow SaaS control-plane API for accounts, trials, subscriptions, releases, and ops workflows.",
+  "description": "UnitFlow SaaS control-plane API for accounts, paid onboarding, subscriptions, releases, and ops workflows.",
   "main": "src/server.js",
   "type": "commonjs",
   "scripts": {

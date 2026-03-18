@@ -10,7 +10,7 @@ exports.latest = async (req, res, next) => {
     if (req.query.tenant_id) {
       const tenant = await prisma.tenant.findUnique({ where: { id: req.query.tenant_id } });
       if (!tenant) throw httpError(404, 'Tenant not found');
-      if (!['TRIAL_ACTIVE', 'ACTIVE', 'GRACE'].includes(tenant.lifecycle_status)) {
+      if (!['ACTIVE', 'GRACE'].includes(tenant.lifecycle_status)) {
         throw httpError(403, 'Tenant is not active for downloads');
       }
     }

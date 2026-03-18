@@ -206,7 +206,7 @@ model SubscriptionPlan {
   seat_limit          Int
   monthly_price_minor Int
   yearly_price_minor  Int
-  trial_days          Int      @default(14)
+  trial_days          Int      @default(0)
   feature_limits_json Json?
   is_active           Boolean  @default(true)
   created_at          DateTime @default(now())
@@ -321,13 +321,12 @@ model Release {
   checksum_sha256               String?
   min_supported_core_version    String?
   min_supported_platform_version String?
-  is_active                     Boolean          @default(true)
   notes                         String?
+  is_active                     Boolean          @default(true)
   created_at                    DateTime         @default(now())
   updated_at                    DateTime         @updatedAt
 
-  @@unique([platform, channel, version])
-  @@index([platform, channel, is_active])
+  @@index([channel, platform, is_active, created_at])
 }
 
 model OpsUser {
@@ -360,16 +359,16 @@ model OpsAuditLog {
 }
 
 model PlatformNotification {
-  id         String               @id @default(cuid())
-  tenant_id   String?
-  account_id  String?
-  type       String
-  title      String
-  body       String?
-  severity   NotificationSeverity @default(INFO)
+  id           String               @id @default(cuid())
+  tenant_id    String?
+  account_id   String?
+  type         String
+  title        String
+  body         String?
+  severity     NotificationSeverity @default(INFO)
   payload_json Json?
-  is_read    Boolean              @default(false)
-  created_at DateTime             @default(now())
+  is_read      Boolean              @default(false)
+  created_at   DateTime             @default(now())
 
   tenant  Tenant?  @relation(fields: [tenant_id], references: [id])
   account Account? @relation(fields: [account_id], references: [id])

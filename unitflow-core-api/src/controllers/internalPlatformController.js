@@ -30,7 +30,7 @@ async function upsertCompanyConfig(tx, companyId, payload = {}) {
       invoice_footer: sanitizeString(payload.invoice_footer),
       plan_code: sanitizeString(payload.plan_code),
       billing_cycle: sanitizeString(payload.billing_cycle),
-      subscription_status: sanitizeString(payload.subscription_status, 'trial'),
+      subscription_status: sanitizeString(payload.subscription_status, 'pending'),
       trial_ends_at: payload.trial_ends_at ? new Date(payload.trial_ends_at) : null,
       active_until: payload.active_until ? new Date(payload.active_until) : null,
       platform_last_synced_at: new Date()
@@ -47,7 +47,7 @@ async function upsertCompanyConfig(tx, companyId, payload = {}) {
       invoice_footer: sanitizeString(payload.invoice_footer),
       plan_code: sanitizeString(payload.plan_code),
       billing_cycle: sanitizeString(payload.billing_cycle),
-      subscription_status: sanitizeString(payload.subscription_status, 'trial'),
+      subscription_status: sanitizeString(payload.subscription_status, 'pending'),
       trial_ends_at: payload.trial_ends_at ? new Date(payload.trial_ends_at) : null,
       active_until: payload.active_until ? new Date(payload.active_until) : null,
       platform_last_synced_at: new Date()
@@ -176,7 +176,7 @@ exports.provisionTenant = async (req, res, next) => {
         invoice_footer: sanitizeString(branding.invoice_footer),
         plan_code: sanitizeString(subscription.plan_code),
         billing_cycle: sanitizeString(subscription.billing_cycle),
-        subscription_status: sanitizeString(subscription.status, 'trial'),
+        subscription_status: sanitizeString(subscription.status, 'active'),
         trial_ends_at: subscription.trial_ends_at,
         active_until: subscription.active_until
       });
