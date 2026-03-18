@@ -8,4 +8,5 @@ router.post('/onboard', controller.onboardPaidTenant);
 router.get('/', controller.listMine);
 router.get('/:tenantId', controller.getOne);
 router.put('/:tenantId/config', controller.updateConfig);
+router.post('/:tenantId/provisioning/retry', controller.retryProvisioning);
 module.exports = router;

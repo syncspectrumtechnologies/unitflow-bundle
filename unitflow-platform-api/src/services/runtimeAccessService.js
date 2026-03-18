@@ -2,6 +2,7 @@ const prisma = require('../config/db');
 const httpError = require('../utils/httpError');
 const { env } = require('../config/env');
 const { signRuntimeToken, hashDeviceFingerprint } = require('../utils/security');
+const { createAudit } = require('./auditService');
 
 function expiresInToMs(value) {
   const v = String(value || '12h').trim();
@@ -17,10 +18,17 @@ function getLatestSubscription(tenant) {
   return Array.isArray(tenant.subscriptions) ? tenant.subscriptions[0] || null : null;
 }
 
+function isRuntimeProvisionReady(tenant) {
+  return Boolean(tenant?.runtime_company_id) && ['READY', 'SYNC_PENDING'].includes(String(tenant?.runtime_provision_status || ''));
+}
+
 function assertRuntimeEligible(tenant) {
   if (!tenant) throw httpError(404, 'Tenant not found');
   if (!['ACTIVE', 'GRACE'].includes(tenant.lifecycle_status)) {
     throw httpError(403, 'Tenant is not active for runtime access');
+  }
+  if (!isRuntimeProvisionReady(tenant)) {
+    throw httpError(403, 'Tenant provisioning is not complete yet');
   }
 
   const latestSubscription = getLatestSubscription(tenant);
@@ -32,17 +40,186 @@ function assertRuntimeEligible(tenant) {
   return latestSubscription;
 }
 
-async function upsertRuntimeDevice({ tenant, accountId, deviceFingerprint, deviceName, platform, osVersion, appVersion, forceTakeover = false }) {
+async function getActiveRuntimeSessions(tenantId) {
+  const now = new Date();
+  const sessions = await prisma.runtimeSession.findMany({
+    where: {
+      tenant_id: tenantId,
+      revoked_at: null,
+      expires_at: { gt: now }
+    },
+    orderBy: { issued_at: 'asc' }
+  });
+
+  if (!sessions.length) return [];
+
+  const audits = await prisma.opsAuditLog.findMany({
+    where: {
+      tenant_id: tenantId,
+      entity_type: 'runtime_session',
+      action: 'runtime.login',
+      entity_id: { in: sessions.map((s) => s.id) }
+    },
+    orderBy: { created_at: 'desc' }
+  });
+
+  const metadataBySessionId = new Map();
+  for (const audit of audits) {
+    if (!metadataBySessionId.has(audit.entity_id)) metadataBySessionId.set(audit.entity_id, audit.metadata_json || {});
+  }
+
+  return sessions.map((session) => ({
+    ...session,
+    runtime_user_id: metadataBySessionId.get(session.id)?.runtime_user_id || null,
+    runtime_user_email: metadataBySessionId.get(session.id)?.runtime_user_email || null,
+    runtime_user_name: metadataBySessionId.get(session.id)?.runtime_user_name || null,
+    device_name: metadataBySessionId.get(session.id)?.device_name || null,
+    platform: metadataBySessionId.get(session.id)?.platform || null,
+    force_takeover: Boolean(metadataBySessionId.get(session.id)?.force_takeover)
+  }));
+}
+
+function groupActiveSeats(activeSessions) {
+  const seatMap = new Map();
+
+  for (const session of activeSessions) {
+    const userId = session.runtime_user_id || `session:${session.id}`;
+    if (!seatMap.has(userId)) {
+      seatMap.set(userId, {
+        runtime_user_id: session.runtime_user_id,
+        runtime_user_email: session.runtime_user_email,
+        runtime_user_name: session.runtime_user_name,
+        issued_at: session.issued_at,
+        last_seen_at: session.last_seen_at,
+        session_ids: [],
+        devices: []
+      });
+    }
+
+    const entry = seatMap.get(userId);
+    entry.session_ids.push(session.id);
+    entry.last_seen_at = entry.last_seen_at > session.last_seen_at ? entry.last_seen_at : session.last_seen_at;
+    if (session.device_id) {
+      entry.devices.push({
+        id: session.device_id,
+        device_name: session.device_name,
+        platform: session.platform,
+        last_seen_at: session.last_seen_at
+      });
+    }
+  }
+
+  return [...seatMap.values()];
+}
+
+async function revokeSeatSessions(tenantId, seat, reason) {
+  if (!seat?.session_ids?.length) return;
+  const now = new Date();
+  await prisma.runtimeSession.updateMany({
+    where: { tenant_id: tenantId, id: { in: seat.session_ids }, revoked_at: null },
+    data: { revoked_at: now, revoke_reason: reason }
+  });
+}
+
+async function maybeTouchDevice(deviceId) {
+  if (!deviceId) return;
+  await prisma.device.updateMany({ where: { id: deviceId }, data: { last_seen_at: new Date() } });
+}
+
+async function enforceSeatPolicy({ tenant, latestSubscription, runtimeUser, forceSeatTransfer = false, seatTransferUserId = null }) {
+  const activeSessions = await getActiveRuntimeSessions(tenant.id);
+  const activeSeats = groupActiveSeats(activeSessions);
+  const runtimeUserId = String(runtimeUser.id);
+  const existingSeat = activeSeats.find((seat) => seat.runtime_user_id === runtimeUserId || seat.runtime_user_email === runtimeUser.email);
+
+  if (latestSubscription.plan.plan_type === 'SINGLE_USER') {
+    const conflictingSeat = activeSeats.find((seat) => (seat.runtime_user_id || seat.runtime_user_email) && seat.runtime_user_id !== runtimeUserId && seat.runtime_user_email !== runtimeUser.email);
+    if (conflictingSeat && !forceSeatTransfer) {
+      throw httpError(409, 'Another active user seat is already in use for this single-user workspace', {
+        code: 'ACTIVE_SEAT_CONFLICT',
+        active_seats: activeSeats
+      });
+    }
+    if (conflictingSeat && forceSeatTransfer) {
+      await revokeSeatSessions(tenant.id, conflictingSeat, 'seat_transfer');
+      await createAudit({
+        actorType: 'RUNTIME_USER',
+        actorId: runtimeUser.id,
+        tenantId: tenant.id,
+        entityType: 'seat_assignment',
+        entityId: conflictingSeat.runtime_user_id || conflictingSeat.runtime_user_email || tenant.id,
+        action: 'seat.transferred',
+        metadata: { from_user: conflictingSeat.runtime_user_email, to_user: runtimeUser.email, reason: 'single_user_transfer' }
+      });
+      return { activeSeats, displacedSeat: conflictingSeat };
+    }
+    return { activeSeats, displacedSeat: null };
+  }
+
+  if (existingSeat) {
+    return { activeSeats, displacedSeat: null };
+  }
+
+  if (activeSeats.length < latestSubscription.seat_limit) {
+    return { activeSeats, displacedSeat: null };
+  }
+
+  if (!forceSeatTransfer) {
+    throw httpError(409, 'Seat limit reached for this workspace', {
+      code: 'SEAT_LIMIT_REACHED',
+      seat_limit: latestSubscription.seat_limit,
+      active_seats: activeSeats
+    });
+  }
+
+  const targetSeat = activeSeats.find((seat) => seat.runtime_user_id === seatTransferUserId || seat.runtime_user_email === seatTransferUserId) || activeSeats[0];
+  await revokeSeatSessions(tenant.id, targetSeat, 'seat_transfer');
+  await createAudit({
+    actorType: 'RUNTIME_USER',
+    actorId: runtimeUser.id,
+    tenantId: tenant.id,
+    entityType: 'seat_assignment',
+    entityId: targetSeat.runtime_user_id || targetSeat.runtime_user_email || tenant.id,
+    action: 'seat.transferred',
+    metadata: {
+      from_user: targetSeat.runtime_user_email,
+      to_user: runtimeUser.email,
+      seat_limit: latestSubscription.seat_limit,
+      reason: 'multi_user_transfer'
+    }
+  });
+  return { activeSeats, displacedSeat: targetSeat };
+}
+
+async function upsertRuntimeDevice({ tenant, accountId, deviceFingerprint, deviceName, platform, osVersion, appVersion, forceTakeover = false, runtimeUser = null, forceSeatTransfer = false, seatTransferUserId = null }) {
   if (!deviceFingerprint) throw httpError(400, 'device_fingerprint is required');
 
   const latestSubscription = assertRuntimeEligible(tenant);
+  const seatPolicy = await enforceSeatPolicy({ tenant, latestSubscription, runtimeUser: runtimeUser || { id: 'owner', email: null }, forceSeatTransfer, seatTransferUserId });
   const fingerprintHash = hashDeviceFingerprint(deviceFingerprint);
   const activeOtherDevices = tenant.devices.filter((d) => d.is_active && d.device_fingerprint_hash !== fingerprintHash && !d.revoked_at);
 
   if (latestSubscription.plan.plan_type === 'SINGLE_USER' && activeOtherDevices.length > 0 && !forceTakeover) {
     throw httpError(409, 'Another device is already active for this single-user workspace', {
       code: 'ACTIVE_DEVICE_CONFLICT',
-      active_devices: activeOtherDevices.map((d) => ({ id: d.id, device_name: d.device_name, platform: d.platform, last_seen_at: d.last_seen_at }))
+      active_devices: activeOtherDevices.map((d) => ({ id: d.id, device_name: d.device_name, platform: d.platform, last_seen_at: d.last_seen_at })),
+      active_seats: seatPolicy.activeSeats
+    });
+  }
+
+  if (activeOtherDevices.length > 0 && runtimeUser) {
+    await createAudit({
+      actorType: 'RUNTIME_USER',
+      actorId: runtimeUser.id,
+      tenantId: tenant.id,
+      entityType: 'device',
+      action: 'runtime.device.suspicious',
+      metadata: {
+        device_name: deviceName,
+        platform,
+        existing_active_devices: activeOtherDevices.map((d) => ({ id: d.id, device_name: d.device_name, platform: d.platform, last_seen_at: d.last_seen_at })),
+        force_takeover: forceTakeover
+      }
     });
   }
 
@@ -82,7 +259,7 @@ async function upsertRuntimeDevice({ tenant, accountId, deviceFingerprint, devic
     });
   }
 
-  return { device, latestSubscription };
+  return { device, latestSubscription, seatPolicy };
 }
 
 async function createRuntimeSession({ tenant, accountId, deviceId, runtimeUser }) {
@@ -117,8 +294,72 @@ async function createRuntimeSession({ tenant, accountId, deviceId, runtimeUser }
   return { token, session, plan, role };
 }
 
+async function validateRuntimeSession({ jti, touch = false }) {
+  const session = await prisma.runtimeSession.findUnique({
+    where: { jti },
+    include: {
+      tenant: {
+        include: {
+          subscriptions: { include: { plan: true }, orderBy: { created_at: 'desc' }, take: 1 }
+        }
+      }
+    }
+  });
+
+  if (!session || session.revoked_at || session.expires_at <= new Date()) return { valid: false };
+
+  try {
+    const latestSubscription = assertRuntimeEligible(session.tenant);
+    if (touch) {
+      await prisma.runtimeSession.updateMany({ where: { id: session.id }, data: { last_seen_at: new Date() } });
+      await maybeTouchDevice(session.device_id);
+    }
+    return {
+      valid: true,
+      session_id: session.id,
+      tenant_id: session.tenant_id,
+      account_id: session.account_id,
+      device_id: session.device_id,
+      subscription_status: latestSubscription.status
+    };
+  } catch (_error) {
+    return { valid: false };
+  }
+}
+
+async function revokeTenantRuntimeAccess(tenantId, reason = 'tenant_access_revoked') {
+  const now = new Date();
+  await prisma.runtimeSession.updateMany({
+    where: { tenant_id: tenantId, revoked_at: null },
+    data: { revoked_at: now, revoke_reason: reason }
+  });
+  await prisma.device.updateMany({
+    where: { tenant_id: tenantId, revoked_at: null },
+    data: { is_active: false, revoked_at: now }
+  });
+}
+
+async function listTenantSessions(tenantId) {
+  const sessions = await getActiveRuntimeSessions(tenantId);
+  return sessions.map((session) => ({
+    id: session.id,
+    runtime_user_id: session.runtime_user_id,
+    runtime_user_email: session.runtime_user_email,
+    runtime_user_name: session.runtime_user_name,
+    device_id: session.device_id,
+    device_name: session.device_name,
+    platform: session.platform,
+    issued_at: session.issued_at,
+    expires_at: session.expires_at,
+    last_seen_at: session.last_seen_at
+  }));
+}
+
 module.exports = {
   assertRuntimeEligible,
   upsertRuntimeDevice,
-  createRuntimeSession
+  createRuntimeSession,
+  validateRuntimeSession,
+  revokeTenantRuntimeAccess,
+  listTenantSessions
 };

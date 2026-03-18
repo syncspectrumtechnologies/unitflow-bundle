@@ -51,7 +51,10 @@ const env = {
   coreApiBaseUrl: process.env.CORE_API_BASE_URL,
   platformInternalApiKey: process.env.PLATFORM_INTERNAL_API_KEY,
   paymentWebhookSecret: process.env.PAYMENT_WEBHOOK_SECRET,
-  buildFingerprint: process.env.BUILD_FINGERPRINT || crypto.createHash('sha256').update('unitflow-platform-api').digest('hex').slice(0, 12)
+  buildFingerprint: process.env.BUILD_FINGERPRINT || crypto.createHash('sha256').update('unitflow-platform-api').digest('hex').slice(0, 12),
+  provisioningWorkerEnabled: parseBool(process.env.PROVISIONING_WORKER_ENABLED, true),
+  provisioningWorkerIntervalMs: parseIntEnv(process.env.PROVISIONING_WORKER_INTERVAL_MS, 5000),
+  provisioningWorkerBatchSize: parseIntEnv(process.env.PROVISIONING_WORKER_BATCH_SIZE, 5)
 };
 
 function validate() {

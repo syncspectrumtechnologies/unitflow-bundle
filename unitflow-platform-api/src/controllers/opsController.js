@@ -3,6 +3,8 @@ const httpError = require('../utils/httpError');
 const { syncTenantStatus } = require('../services/coreSyncService');
 const { createAudit } = require('../services/auditService');
 const { createNotification } = require('../services/notificationService');
+const { listProvisioningQueue, queueProvisioning, processProvisioningQueue } = require('../services/provisioningService');
+const { revokeTenantRuntimeAccess } = require('../services/runtimeAccessService');
 
 exports.listTenants = async (req, res, next) => {
   try {
@@ -55,6 +57,10 @@ async function transitionTenant(req, res, next, targetStatus) {
       await prisma.tenantSubscription.update({ where: { id: latest.id }, data: { status: subStatus } });
     }
 
+    if (targetStatus === 'SUSPENDED' || targetStatus === 'CANCELLED') {
+      await revokeTenantRuntimeAccess(tenant.id, `tenant_${targetStatus.toLowerCase()}`);
+    }
+
     await syncTenantStatus(tenant.id, {
       is_active: targetStatus !== 'SUSPENDED' && targetStatus !== 'EXPIRED' && targetStatus !== 'CANCELLED',
       subscription_status: targetStatus.toLowerCase()
@@ -93,5 +99,28 @@ exports.updateRelease = async (req, res, next) => {
     const release = await prisma.release.update({ where: { id: req.params.releaseId }, data: req.body || {} });
     await createAudit({ actorType: 'OPS', actorId: req.opsUser.id, entityType: 'release', entityId: release.id, action: 'release.updated' });
     res.json({ ok: true, release });
+  } catch (error) { next(error); }
+};
+
+exports.listProvisioningQueue = async (req, res, next) => {
+  try {
+    const queue = await listProvisioningQueue();
+    res.json({ ok: true, queue });
+  } catch (error) { next(error); }
+};
+
+exports.retryProvisioning = async (req, res, next) => {
+  try {
+    const tenant = await prisma.tenant.findUnique({ where: { id: req.params.tenantId } });
+    if (!tenant) throw httpError(404, 'Tenant not found');
+    const queued = await queueProvisioning({ tenantId: tenant.id, reason: 'ops_retry', actorType: 'OPS', actorId: req.opsUser.id });
+    res.json({ ok: true, ...queued });
+  } catch (error) { next(error); }
+};
+
+exports.runProvisioningQueue = async (req, res, next) => {
+  try {
+    const result = await processProvisioningQueue();
+    res.json({ ok: true, ...result });
   } catch (error) { next(error); }
 };

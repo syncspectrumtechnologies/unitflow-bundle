@@ -1,8 +1,10 @@
 const jwt = require("jsonwebtoken");
+const axios = require("axios");
 const prisma = require("../config/db");
 const { env } = require("../config/env");
 
 const roleCache = new Map();
+const runtimeSessionValidationCache = new Map();
 
 function getRoleCacheKey(company_id, user_id) {
   return `${company_id}:${user_id}`;
@@ -91,6 +93,29 @@ function verifyPlatformRuntimeToken(token) {
   return jwt.verify(token, env.platformRuntimeJwtSecret, verifyOptions);
 }
 
+function platformClient() {
+  return axios.create({
+    baseURL: env.platformApiBaseUrl,
+    timeout: 7000,
+    headers: {
+      "X-Platform-Api-Key": process.env.PLATFORM_INTERNAL_API_KEY,
+      "Content-Type": "application/json"
+    }
+  });
+}
+
+async function validateRuntimeSessionWithPlatform(jti, touch = true) {
+  const cacheKey = `${jti}:${touch ? 'touch' : 'no-touch'}`;
+  const ttlMs = env.runtimeSessionValidationCacheMs;
+  const cached = runtimeSessionValidationCache.get(cacheKey);
+  if (cached && cached.expires_at > Date.now()) return cached.value;
+
+  const res = await platformClient().post('/internal/runtime-sessions/validate', { jti, touch });
+  const value = res.data;
+  runtimeSessionValidationCache.set(cacheKey, { value, expires_at: Date.now() + ttlMs });
+  return value;
+}
+
 async function authenticateCoreToken(token, { touchSession = true } = {}) {
   if (!env.allowDirectCoreLogin) return null;
 
@@ -121,6 +146,15 @@ async function authenticateCoreToken(token, { touchSession = true } = {}) {
 async function authenticatePlatformRuntimeToken(token) {
   const decoded = verifyPlatformRuntimeToken(token);
   if (decoded.token_type !== "runtime") return null;
+  if (!decoded.jti) return null;
+
+  try {
+    const validation = await validateRuntimeSessionWithPlatform(decoded.jti, true);
+    if (!validation?.valid) return null;
+  } catch (_error) {
+    return null;
+  }
+
   return loadActiveUser(decoded);
 }
 
@@ -130,14 +164,14 @@ async function authenticateToken(token, { touchSession = true } = {}) {
   if (decoded.token_type === "runtime") {
     try {
       return await authenticatePlatformRuntimeToken(token);
-    } catch (error) {
+    } catch (_error) {
       return null;
     }
   }
 
   try {
     return await authenticateCoreToken(token, { touchSession });
-  } catch (error) {
+  } catch (_error) {
     return null;
   }
 }

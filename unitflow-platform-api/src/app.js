@@ -15,6 +15,7 @@ const subscriptionRoutes = require('./routes/subscriptionRoutes');
 const releaseRoutes = require('./routes/releaseRoutes');
 const opsRoutes = require('./routes/opsRoutes');
 const runtimeRoutes = require('./routes/runtimeRoutes');
+const internalRoutes = require('./routes/internalRoutes');
 
 const app = express();
 app.disable('x-powered-by');
@@ -27,7 +28,7 @@ app.use(cors({
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Authorization', 'Content-Type', 'X-Request-Id', 'X-Payment-Webhook-Secret']
+  allowedHeaders: ['Authorization', 'Content-Type', 'X-Request-Id', 'X-Payment-Webhook-Secret', 'X-Platform-Api-Key']
 }));
 app.use(express.json({ limit: env.jsonBodyLimit }));
 app.use(express.urlencoded({ extended: false, limit: env.jsonBodyLimit }));
@@ -58,6 +59,7 @@ app.use('/subscriptions', subscriptionRoutes);
 app.use('/releases', releaseRoutes);
 app.use('/runtime', runtimeRoutes);
 app.use('/ops', opsRoutes);
+app.use('/internal', internalRoutes);
 
 app.use(notFoundHandler);
 app.use(errorHandler);

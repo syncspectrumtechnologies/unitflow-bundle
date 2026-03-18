@@ -47,7 +47,8 @@ exports.createCheckoutIntent = async (req, res, next) => {
       accountId: req.account.id,
       plan,
       billingCycle: normalizedBillingCycle,
-      currency: env.defaultCurrency
+      currency: env.defaultCurrency,
+      metadata: { source: 'checkout_intent' }
     });
 
     res.status(201).json({ ok: true, payment_id: payment.id, amount_minor: payment.amount_minor, currency: payment.currency, plan_code: plan.code, billing_cycle: normalizedBillingCycle });
@@ -57,7 +58,7 @@ exports.createCheckoutIntent = async (req, res, next) => {
 exports.paymentWebhook = async (req, res, next) => {
   try {
     const secret = req.headers['x-payment-webhook-secret'];
-    if (!secret || secret !== process.env.PAYMENT_WEBHOOK_SECRET) throw httpError(401, 'Invalid webhook secret');
+    if (!secret || secret !== env.paymentWebhookSecret) throw httpError(401, 'Invalid webhook secret');
 
     const { payment_id, tenant_id, plan_code, billing_cycle, gateway, gateway_order_ref, gateway_payment_ref, status, invoice_ref, receipt_url, metadata } = req.body || {};
     if (!payment_id || !tenant_id || !plan_code || !billing_cycle || !status) throw httpError(400, 'payment_id, tenant_id, plan_code, billing_cycle, status are required');
@@ -96,10 +97,11 @@ exports.paymentWebhook = async (req, res, next) => {
       if (!plan) throw httpError(404, 'Plan not found');
       const sub = await activatePaidSubscription({ tenant, plan, billingCycle: String(billing_cycle).toUpperCase(), payment });
       await createAudit({ actorType: 'SYSTEM', tenantId: tenant.id, entityType: 'payment', entityId: payment.id, action: 'payment.succeeded', metadata: { subscription_id: sub.id } });
-    } else {
-      await createAudit({ actorType: 'SYSTEM', tenantId: tenant.id, entityType: 'payment', entityId: payment.id, action: 'payment.updated', metadata: { status } });
+      res.json({ ok: true, provisioning: 'queued', subscription_id: sub.id });
+      return;
     }
 
+    await createAudit({ actorType: 'SYSTEM', tenantId: tenant.id, entityType: 'payment', entityId: payment.id, action: 'payment.updated', metadata: { status } });
     res.json({ ok: true });
   } catch (error) { next(error); }
 };

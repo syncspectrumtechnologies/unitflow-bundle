@@ -57,7 +57,9 @@ const env = {
   platformRuntimeJwtSecret: process.env.PLATFORM_RUNTIME_JWT_SECRET || process.env.JWT_SECRET,
   platformRuntimeJwtIssuer: process.env.PLATFORM_RUNTIME_JWT_ISSUER || "unitflow-platform-api",
   platformRuntimeJwtAudience: process.env.PLATFORM_RUNTIME_JWT_AUDIENCE || "unitflow-core-api",
-  buildFingerprint: process.env.BUILD_FINGERPRINT || crypto.createHash("sha256").update(serviceName + runtimeMode).digest("hex").slice(0, 12)
+  buildFingerprint: process.env.BUILD_FINGERPRINT || crypto.createHash("sha256").update(serviceName + runtimeMode).digest("hex").slice(0, 12),
+  platformApiBaseUrl: process.env.PLATFORM_API_BASE_URL || null,
+  runtimeSessionValidationCacheMs: parseIntEnv(process.env.RUNTIME_SESSION_VALIDATION_CACHE_MS, 5000)
 };
 
 function validate() {
@@ -69,6 +71,8 @@ function validate() {
   }
   if (!env.allowDirectCoreLogin) {
     if (!env.platformRuntimeJwtSecret) issues.push("PLATFORM_RUNTIME_JWT_SECRET is required when direct core login is disabled");
+    if (!env.platformApiBaseUrl) issues.push("PLATFORM_API_BASE_URL is required when direct core login is disabled");
+    if (!process.env.PLATFORM_INTERNAL_API_KEY) issues.push("PLATFORM_INTERNAL_API_KEY is required when direct core login is disabled");
     if (String(env.platformRuntimeJwtSecret || "").length > 0 && String(env.platformRuntimeJwtSecret || "").length < 32) {
       issues.push("PLATFORM_RUNTIME_JWT_SECRET must be at least 32 characters");
     }

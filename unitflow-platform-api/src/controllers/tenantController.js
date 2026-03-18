@@ -1,17 +1,18 @@
 const prisma = require('../config/db');
 const httpError = require('../utils/httpError');
 const { safeSlug } = require('../utils/security');
-const { syncTenantConfig } = require('../services/coreSyncService');
 const { createAudit } = require('../services/auditService');
 const { createNotification } = require('../services/notificationService');
 const { getPlanByCode } = require('../services/planService');
 const { createCheckoutPayment } = require('../services/subscriptionService');
 const { env } = require('../config/env');
+const { queueProvisioning, buildProvisioningVersion } = require('../services/provisioningService');
 
 async function assertOwner(tenantId, accountId) {
   const tenant = await prisma.tenant.findFirst({
     where: { id: tenantId, owner_account_id: accountId },
     include: {
+      owner: { select: { id: true, email: true, phone: true, name: true, email_verified_at: true, phone_verified_at: true } },
       config: true,
       locations: true,
       subscriptions: { include: { plan: true }, orderBy: { created_at: 'desc' }, take: 1 }
@@ -68,19 +69,14 @@ exports.onboardPaidTenant = async (req, res, next) => {
     if (!plan_code || !billing_cycle) throw httpError(400, 'plan_code and billing_cycle are required');
     if (!['SINGLE_USER', 'MULTI_USER'].includes(String(plan_code).toUpperCase())) throw httpError(400, 'plan_code must be SINGLE_USER or MULTI_USER');
     if (!['MONTHLY', 'YEARLY'].includes(String(billing_cycle).toUpperCase())) throw httpError(400, 'billing_cycle must be MONTHLY or YEARLY');
-    if (!req.account.email_verified_at) throw httpError(403, 'Email verification is required before onboarding');
+    if (!req.account.email_verified_at || !req.account.phone_verified_at) throw httpError(403, 'Email and phone verification are required before onboarding');
 
     const plan = await getPlanByCode(String(plan_code).toUpperCase());
     if (!plan) throw httpError(404, 'Selected plan is not available');
 
     const activeTenant = await prisma.tenant.findFirst({
-      where: {
-        owner_account_id: req.account.id,
-        lifecycle_status: { in: ['ACTIVE', 'GRACE'] }
-      },
-      include: {
-        subscriptions: { where: { status: { in: ['ACTIVE', 'GRACE'] } }, take: 1 }
-      }
+      where: { owner_account_id: req.account.id, lifecycle_status: { in: ['ACTIVE', 'GRACE'] } },
+      include: { subscriptions: { where: { status: { in: ['ACTIVE', 'GRACE'] } }, take: 1 } }
     });
     if (activeTenant) throw httpError(409, 'This account already has an active workspace');
 
@@ -148,10 +144,7 @@ exports.onboardPaidTenant = async (req, res, next) => {
 
         await tx.payment.updateMany({
           where: { tenant_id: reusableTenant.id, status: 'PENDING' },
-          data: {
-            status: 'FAILED',
-            audit_trail_json: { cancelled_at: new Date().toISOString(), reason: 'superseded_by_new_checkout' }
-          }
+          data: { status: 'FAILED', audit_trail_json: { cancelled_at: new Date().toISOString(), reason: 'superseded_by_new_checkout' } }
         });
       } else {
         workspace = await tx.tenant.create({
@@ -199,10 +192,7 @@ exports.onboardPaidTenant = async (req, res, next) => {
         plan,
         billingCycle: normalizedBillingCycle,
         currency: env.defaultCurrency,
-        metadata: {
-          source: 'self_serve_onboarding',
-          display_name: String(display_name).trim()
-        }
+        metadata: { source: 'self_serve_onboarding', display_name: String(display_name).trim() }
       });
 
       return { ...workspace, payment };
@@ -230,6 +220,7 @@ exports.onboardPaidTenant = async (req, res, next) => {
       ok: true,
       tenant_id: tenant.id,
       lifecycle_status: 'SUSPENDED',
+      runtime_provision_status: 'PAYMENT_PENDING',
       onboarding_status: 'PROFILE_COMPLETED',
       plan_code: plan.code,
       billing_cycle: normalizedBillingCycle,
@@ -251,20 +242,36 @@ exports.listMine = async (req, res, next) => {
     const tenants = await prisma.tenant.findMany({
       where: { owner_account_id: req.account.id },
       include: {
+        owner: { select: { id: true, email: true, phone: true, name: true, email_verified_at: true, phone_verified_at: true } },
         config: true,
         locations: true,
         subscriptions: { include: { plan: true }, orderBy: { created_at: 'desc' }, take: 1 }
       },
       orderBy: { created_at: 'desc' }
     });
-    res.json({ ok: true, tenants });
+
+    res.json({
+      ok: true,
+      tenants: tenants.map((tenant) => ({
+        ...tenant,
+        provisioning_version: buildProvisioningVersion(tenant, tenant.subscriptions?.[0] || null),
+        runtime_access_ready: ['READY', 'SYNC_PENDING'].includes(String(tenant.runtime_provision_status || '')) && ['ACTIVE', 'GRACE'].includes(tenant.lifecycle_status)
+      }))
+    });
   } catch (error) { next(error); }
 };
 
 exports.getOne = async (req, res, next) => {
   try {
     const tenant = await assertOwner(req.params.tenantId, req.account.id);
-    res.json({ ok: true, tenant });
+    res.json({
+      ok: true,
+      tenant: {
+        ...tenant,
+        provisioning_version: buildProvisioningVersion(tenant, tenant.subscriptions?.[0] || null),
+        runtime_access_ready: ['READY', 'SYNC_PENDING'].includes(String(tenant.runtime_provision_status || '')) && ['ACTIVE', 'GRACE'].includes(tenant.lifecycle_status)
+      }
+    });
   } catch (error) { next(error); }
 };
 
@@ -305,21 +312,20 @@ exports.updateConfig = async (req, res, next) => {
       }
     });
 
-    if (tenant.runtime_provision_status === 'READY') {
-      await syncTenantConfig(tenant.id, {
-        company: {
-          name: company.display_name || tenant.display_name,
-          legal_name: company.legal_name !== undefined ? company.legal_name : tenant.legal_name,
-          address: Array.isArray(locations) && locations[0] ? locations[0].address || null : undefined,
-          email: req.account.email,
-          phone: req.account.phone
-        },
-        branding,
-        locations: Array.isArray(locations) ? locations : undefined
-      });
+    let queueResult = null;
+    if (tenant.runtime_company_id) {
+      queueResult = await queueProvisioning({ tenantId: tenant.id, reason: 'config_update', actorType: 'ACCOUNT', actorId: req.account.id });
     }
 
-    await createAudit({ actorType: 'ACCOUNT', actorId: req.account.id, tenantId: tenant.id, entityType: 'tenant', entityId: tenant.id, action: 'tenant.config.updated' });
-    res.json({ ok: true, synced: tenant.runtime_provision_status === 'READY' });
+    await createAudit({ actorType: 'ACCOUNT', actorId: req.account.id, tenantId: tenant.id, entityType: 'tenant', entityId: tenant.id, action: 'tenant.config.updated', metadata: { queued_sync: Boolean(queueResult) } });
+    res.json({ ok: true, synced: false, provisioning: queueResult });
+  } catch (error) { next(error); }
+};
+
+exports.retryProvisioning = async (req, res, next) => {
+  try {
+    const tenant = await assertOwner(req.params.tenantId, req.account.id);
+    const queued = await queueProvisioning({ tenantId: tenant.id, reason: 'owner_retry', actorType: 'ACCOUNT', actorId: req.account.id });
+    res.json({ ok: true, ...queued });
   } catch (error) { next(error); }
 };

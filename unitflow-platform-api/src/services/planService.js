@@ -14,10 +14,17 @@ async function ensureDefaultPlans() {
       trial_days: 0,
       feature_limits_json: {
         max_users: 1,
+        max_factories: 1,
         max_active_devices_per_seat: 1,
-        mobile_companion_access: false,
+        max_products: 500,
+        max_orders_per_month: 500,
+        max_invoices_per_month: 500,
         api_access: false,
-        plan_family: 'single'
+        mobile_companion_access: false,
+        advanced_exports: false,
+        premium_messaging: false,
+        plan_family: 'single',
+        enabled_modules: ['core_erp', 'inventory', 'orders', 'invoices', 'payments', 'purchases']
       }
     },
     {
@@ -31,20 +38,23 @@ async function ensureDefaultPlans() {
       trial_days: 0,
       feature_limits_json: {
         max_users: env.multiSeatLimit,
+        max_factories: 5,
         max_active_devices_per_seat: 2,
-        mobile_companion_access: false,
+        max_products: 10000,
+        max_orders_per_month: 10000,
+        max_invoices_per_month: 10000,
         api_access: false,
-        plan_family: 'multi'
+        mobile_companion_access: false,
+        advanced_exports: true,
+        premium_messaging: true,
+        plan_family: 'multi',
+        enabled_modules: ['core_erp', 'inventory', 'orders', 'invoices', 'payments', 'purchases', 'chat', 'broadcast', 'stats']
       }
     }
   ];
 
   for (const def of defs) {
-    await prisma.subscriptionPlan.upsert({
-      where: { code: def.code },
-      update: def,
-      create: def
-    });
+    await prisma.subscriptionPlan.upsert({ where: { code: def.code }, update: def, create: def });
   }
 }
 
@@ -53,10 +63,7 @@ async function getPlanByCode(code) {
 }
 
 async function listActivePlans() {
-  return prisma.subscriptionPlan.findMany({
-    where: { is_active: true },
-    orderBy: { created_at: 'asc' }
-  });
+  return prisma.subscriptionPlan.findMany({ where: { is_active: true }, orderBy: { created_at: 'asc' } });
 }
 
 module.exports = { ensureDefaultPlans, getPlanByCode, listActivePlans };

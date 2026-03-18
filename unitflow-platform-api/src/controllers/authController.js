@@ -11,11 +11,11 @@ const { upsertRuntimeDevice, createRuntimeSession } = require('../services/runti
 exports.signup = async (req, res, next) => {
   try {
     const { email, phone, name, password } = req.body || {};
-    if (!email || !name || !password) throw httpError(400, 'email, name, and password are required');
+    if (!email || !phone || !name || !password) throw httpError(400, 'email, phone, name, and password are required');
 
     const normalizedEmail = String(email).toLowerCase().trim();
-    const normalizedPhone = phone ? String(phone).trim() : null;
-    const existing = await prisma.account.findFirst({ where: { OR: [{ email: normalizedEmail }, ...(normalizedPhone ? [{ phone: normalizedPhone }] : [])] } });
+    const normalizedPhone = String(phone).trim();
+    const existing = await prisma.account.findFirst({ where: { OR: [{ email: normalizedEmail }, { phone: normalizedPhone }] } });
     if (existing) throw httpError(409, 'An account with this email or phone already exists');
 
     const passwordHash = await bcrypt.hash(String(password), 10);
@@ -23,12 +23,10 @@ exports.signup = async (req, res, next) => {
       data: { email: normalizedEmail, phone: normalizedPhone, name: String(name).trim(), password_hash: passwordHash }
     });
 
-    const verification = await createVerification({
-      accountId: account.id,
-      channel: 'EMAIL',
-      purpose: 'SIGNUP',
-      target: account.email
-    });
+    const [emailVerification, phoneVerification] = await Promise.all([
+      createVerification({ accountId: account.id, channel: 'EMAIL', purpose: 'SIGNUP', target: account.email }),
+      createVerification({ accountId: account.id, channel: 'PHONE', purpose: 'SIGNUP', target: account.phone })
+    ]);
 
     await createAudit({ actorType: 'ACCOUNT', actorId: account.id, entityType: 'account', entityId: account.id, action: 'account.created' });
 
@@ -36,8 +34,9 @@ exports.signup = async (req, res, next) => {
       ok: true,
       account_id: account.id,
       verification_required: true,
-      verification_channel: 'EMAIL',
-      verification_code: env.isProduction ? undefined : verification.code
+      verification_channels: ['EMAIL', 'PHONE'],
+      verification_code: env.isProduction ? undefined : emailVerification.code,
+      phone_verification_code: env.isProduction ? undefined : phoneVerification.code
     });
   } catch (error) {
     next(error);
@@ -122,7 +121,9 @@ exports.runtimeLogin = async (req, res, next) => {
       platform,
       os_version,
       app_version,
-      force_takeover = false
+      force_takeover = false,
+      force_seat_transfer = false,
+      seat_transfer_user_id = null
     } = req.body || {};
 
     if (!email || !password) throw httpError(400, 'email and password are required');
@@ -151,7 +152,7 @@ exports.runtimeLogin = async (req, res, next) => {
     });
     if (!tenant) throw httpError(404, 'Tenant not found for runtime user');
 
-    const { device, latestSubscription } = await upsertRuntimeDevice({
+    const { device, seatPolicy } = await upsertRuntimeDevice({
       tenant,
       accountId: tenant.owner_account_id,
       deviceFingerprint: device_fingerprint,
@@ -159,7 +160,10 @@ exports.runtimeLogin = async (req, res, next) => {
       platform,
       osVersion: os_version,
       appVersion: app_version,
-      forceTakeover: force_takeover
+      forceTakeover: force_takeover,
+      runtimeUser,
+      forceSeatTransfer: force_seat_transfer,
+      seatTransferUserId: seat_transfer_user_id
     });
 
     const { token, session, plan, role } = await createRuntimeSession({
@@ -176,7 +180,19 @@ exports.runtimeLogin = async (req, res, next) => {
       entityType: 'runtime_session',
       entityId: session.id,
       action: 'runtime.login',
-      metadata: { device_id: device.id, plan }
+      metadata: {
+        device_id: device.id,
+        device_name: device.device_name,
+        platform: device.platform,
+        plan,
+        role,
+        runtime_user_id: runtimeUser.id,
+        runtime_user_email: runtimeUser.email,
+        runtime_user_name: runtimeUser.name,
+        force_takeover,
+        force_seat_transfer,
+        displaced_user: seatPolicy?.displacedSeat?.runtime_user_email || null
+      }
     });
 
     return res.json({
@@ -186,7 +202,8 @@ exports.runtimeLogin = async (req, res, next) => {
       tenant: {
         id: tenant.id,
         display_name: tenant.display_name,
-        lifecycle_status: tenant.lifecycle_status
+        lifecycle_status: tenant.lifecycle_status,
+        runtime_provision_status: tenant.runtime_provision_status
       },
       user: {
         id: runtimeUser.id,
@@ -199,7 +216,11 @@ exports.runtimeLogin = async (req, res, next) => {
       },
       device,
       runtime_session: { id: session.id, expires_at: session.expires_at },
-      plan
+      plan,
+      seat_transfer: seatPolicy?.displacedSeat ? {
+        from_user: seatPolicy.displacedSeat.runtime_user_email,
+        session_count: seatPolicy.displacedSeat.session_ids.length
+      } : null
     });
   } catch (error) {
     next(error);
@@ -208,8 +229,24 @@ exports.runtimeLogin = async (req, res, next) => {
 
 exports.me = async (req, res, next) => {
   try {
-    const tenants = await prisma.tenant.findMany({ where: { owner_account_id: req.account.id }, include: { subscriptions: { orderBy: { created_at: 'desc' }, take: 1 }, config: true } });
-    return res.json({ ok: true, account: { id: req.account.id, email: req.account.email, phone: req.account.phone, name: req.account.name, email_verified_at: req.account.email_verified_at, phone_verified_at: req.account.phone_verified_at, status: req.account.status }, tenants });
+    const tenants = await prisma.tenant.findMany({
+      where: { owner_account_id: req.account.id },
+      include: { subscriptions: { include: { plan: true }, orderBy: { created_at: 'desc' }, take: 1 }, config: true, locations: true },
+      orderBy: { created_at: 'desc' }
+    });
+    return res.json({
+      ok: true,
+      account: {
+        id: req.account.id,
+        email: req.account.email,
+        phone: req.account.phone,
+        name: req.account.name,
+        email_verified_at: req.account.email_verified_at,
+        phone_verified_at: req.account.phone_verified_at,
+        status: req.account.status
+      },
+      tenants
+    });
   } catch (error) {
     next(error);
   }
