@@ -4,6 +4,7 @@ const { makeOrderNoTx } = require("../utils/numbering");
 const { requireSingleFactory } = require("../utils/factoryScope");
 const { orderVisibilityWhere } = require("../utils/factoryVisibility");
 const { ensureInvoiceForOrderTx, syncInvoiceFromOrderTx } = require("../services/orderInvoiceService");
+const { resolveSalesGstContextTx, buildSalesItemsFromPayloadTx, summarizeCharges } = require("../services/documentTaxService");
 const { getPagination, buildPaginationMeta } = require("../utils/pagination");
 const { getBalanceTx, createMovementTx } = require("../services/inventoryLedgerService");
 
@@ -99,7 +100,8 @@ function buildDispatchAllocationRows(order, payload, fallbackFactoryId) {
     sourceRows = topLevelRows.map((row) => ({
       product_id: normalizeProductId(row.product_id),
       factory_id: row.factory_id,
-      quantity: row.quantity
+      quantity: row.quantity,
+      tracked_lines: Array.isArray(row.tracked_lines) ? row.tracked_lines : []
     }));
   } else if (hasItemLevelAllocations) {
     for (const item of payload.items) {
@@ -109,7 +111,8 @@ function buildDispatchAllocationRows(order, payload, fallbackFactoryId) {
         sourceRows.push({
           product_id: normalizeProductId(row.product_id) || productId,
           factory_id: row.factory_id,
-          quantity: row.quantity
+          quantity: row.quantity,
+          tracked_lines: Array.isArray(row.tracked_lines) ? row.tracked_lines : []
         });
       }
     }
@@ -117,13 +120,15 @@ function buildDispatchAllocationRows(order, payload, fallbackFactoryId) {
     sourceRows = order.fulfillments.map((row) => ({
       product_id: row.product_id,
       factory_id: row.factory_id,
-      quantity: row.quantity
+      quantity: row.quantity,
+      tracked_lines: []
     }));
   } else {
     sourceRows = orderProductIds.map((product_id) => ({
       product_id,
       factory_id: fallbackFactoryId,
-      quantity: orderedQtyByProduct.get(product_id)
+      quantity: orderedQtyByProduct.get(product_id),
+      tracked_lines: []
     }));
   }
 
@@ -162,7 +167,8 @@ function buildDispatchAllocationRows(order, payload, fallbackFactoryId) {
     aggregated.set(key, {
       product_id,
       factory_id,
-      quantity: (aggregated.get(key)?.quantity || 0) + quantity
+      quantity: (aggregated.get(key)?.quantity || 0) + quantity,
+      tracked_lines: Array.isArray(row.tracked_lines) ? row.tracked_lines : (aggregated.get(key)?.tracked_lines || [])
     });
   }
 
@@ -623,7 +629,8 @@ exports.createOrder = async (req, res) => {
       notes,
       internal_notes,
       items,
-      charges
+      charges,
+      is_gst_invoice
     } = req.body;
 
     if (!client_id) return res.status(400).json({ message: "client_id is required" });
@@ -668,33 +675,9 @@ exports.createOrder = async (req, res) => {
         throw err;
       }
 
-      // Fetch products with pricing. unit_price is auto-fetched from:
-      // 1) ClientProduct.default_price (if present)
-      // 2) Product.price
       const productIds = [...new Set(items.map((i) => i.product_id))];
-      const products = await tx.product.findMany({
-        where: { company_id, id: { in: productIds }, is_active: true },
-        select: { id: true, price: true }
-      });
-      if (products.length !== productIds.length) {
-        const err = new Error("PRODUCT_NOT_FOUND");
-        err.statusCode = 404;
-        throw err;
-      }
-      const productPrice = new Map(products.map((p) => [p.id, Number(p.price || 0)]));
-
-      const clientProductRows = await tx.clientProduct.findMany({
-        where: { company_id, client_id, product_id: { in: productIds } },
-        select: { product_id: true, default_price: true, is_active: true }
-      });
-      const clientDefaultPrice = new Map(
-        clientProductRows
-          .filter((r) => r.default_price !== null && r.default_price !== undefined)
-          .map((r) => [r.product_id, Number(r.default_price)])
-      );
 
       // Auto-map ordered products to the client (first-time order should not require manual mapping).
-      // If mapping exists but was inactive, reactivate it.
       for (const pid of productIds) {
         await tx.clientProduct.upsert({
           where: { company_id_client_id_product_id: { company_id, client_id, product_id: pid } },
@@ -703,52 +686,48 @@ exports.createOrder = async (req, res) => {
         });
       }
 
+      const gstContext = await resolveSalesGstContextTx(tx, { company_id, sales_company_id, client_id, explicit_is_gst_invoice: is_gst_invoice });
+      const built = await buildSalesItemsFromPayloadTx(tx, { company_id, client_id, items, supply_type: gstContext.supply_type, is_gst_invoice: gstContext.is_gst_invoice });
+
       // Dispatch allocations are no longer captured at order creation time.
       // Orders stay in CONFIRMED state first, and stock is deducted only when the
       // order is dispatched/completed later.
 
-      // Build nested creates for items (unit_price auto-fetched if missing).
-      const computedItems = items.map((it) => {
-        const qty = Number(it.quantity);
-        const disc = it.discount !== undefined && it.discount !== null ? Number(it.discount) : 0;
+      const computedItems = built.items.map((it) => ({
+        company: { connect: { id: company_id } },
+        product: { connect: { id: it.product_id } },
+        quantity: it.quantity,
+        unit_price: it.unit_price,
+        discount: it.discount,
+        line_total: it.line_total,
+        hsn_sac_code: it.hsn_sac_code,
+        gst_rate: it.gst_rate,
+        cgst_rate: it.cgst_rate,
+        sgst_rate: it.sgst_rate,
+        igst_rate: it.igst_rate,
+        cess_rate: it.cess_rate,
+        taxable_value: it.taxable_value,
+        tax_amount: it.tax_amount,
+        cgst_amount: it.cgst_amount,
+        sgst_amount: it.sgst_amount,
+        igst_amount: it.igst_amount,
+        cess_amount: it.cess_amount,
+        remarks: it.remarks?.toString() || null
+      }));
 
-        const supplied = it.unit_price !== undefined && it.unit_price !== null && it.unit_price !== "" ? Number(it.unit_price) : null;
-        const fallback = clientDefaultPrice.get(it.product_id) ?? productPrice.get(it.product_id) ?? 0;
-        const price = supplied !== null && Number.isFinite(supplied) ? supplied : Number(fallback);
-
-        if (!Number.isFinite(price) || price < 0) {
-          const err = new Error("INVALID_PRICE");
-          err.statusCode = 400;
-          err.meta = { product_id: it.product_id, unit_price: price };
-          throw err;
-        }
-
-        const line_total = calcLineTotal(qty, price, disc);
-
-        return {
-          company: { connect: { id: company_id } },
-          product: { connect: { id: it.product_id } },
-          quantity: qty,
-          unit_price: price,
-          discount: disc || null,
-          line_total,
-          remarks: it.remarks?.toString() || null
-        };
-      });
-
-      const subtotal = computedItems.reduce((acc, it) => acc + Number(it.line_total), 0);
-
+      const subtotal = built.totals.subtotal;
       const chargesArr = Array.isArray(charges) ? charges : [];
-      const computedCharges = chargesArr.map((c) => ({
+      const normalizedCharges = summarizeCharges(chargesArr);
+      const computedCharges = normalizedCharges.map((c) => ({
         company: { connect: { id: company_id } },
         type: c.type || "OTHER",
-        title: c.title?.toString() || "Charge",
+        title: c.title?.toString() || c.label || "Charge",
         amount: Number(c.amount || 0),
         meta: c.meta || null
       }));
 
-      const total_charges = computedCharges.reduce((acc, c) => acc + Number(c.amount || 0), 0);
-      const total = Number(subtotal) + Number(total_charges);
+      const total_charges = normalizedCharges.reduce((acc, c) => acc + Number(c.amount || 0), 0);
+      const total = Number(built.totals.total) + Number(total_charges);
 
       // Create order (primary factory stays required for backward compatibility)
       const order = await tx.order.create({
@@ -764,9 +743,20 @@ exports.createOrder = async (req, res) => {
           status: "CONFIRMED",
           order_date: od,
           required_by: rb,
+          place_of_supply_state: gstContext.place_of_supply_state,
+          place_of_supply_code: gstContext.place_of_supply_code,
+          supply_type: gstContext.supply_type,
+          is_gst_invoice: gstContext.is_gst_invoice,
 
           subtotal,
+          tax_subtotal: built.totals.tax_subtotal,
           total_charges,
+          cgst_total: built.totals.cgst_total,
+          sgst_total: built.totals.sgst_total,
+          igst_total: built.totals.igst_total,
+          cess_total: built.totals.cess_total,
+          round_off: built.totals.round_off,
+          gst_breakup: built.totals.gst_breakup,
           total,
 
           notes: notes?.toString() || null,
@@ -871,8 +861,15 @@ exports.updateOrder = async (req, res) => {
       internal_notes,
       logistics,
       items,
-      charges
+      charges,
+      is_gst_invoice
     } = req.body;
+
+    if (is_gst_invoice !== undefined) {
+      return res.status(400).json({
+        message: "Changing GST mode on an existing order is not enabled yet. Create the order with is_gst_invoice set correctly."
+      });
+    }
 
     // In this version, updating items DOES NOT auto-rebalance inventory movements.
     if (items !== undefined) {
@@ -884,19 +881,20 @@ exports.updateOrder = async (req, res) => {
     const rb = required_by !== undefined ? (parseDateOrNull(required_by) || null) : undefined;
 
     const chargesArr = charges === undefined ? undefined : (Array.isArray(charges) ? charges : []);
-    const total_charges = chargesArr ? sumCharges(chargesArr) : existing.total_charges;
+    const normalizedCharges = chargesArr ? summarizeCharges(chargesArr) : null;
+    const total_charges = normalizedCharges ? normalizedCharges.reduce((sum, row) => sum + Number(row.amount || 0), 0) : existing.total_charges;
 
     const updated = await prisma.$transaction(async (tx) => {
       // Replace charges if provided
       if (chargesArr !== undefined) {
         await tx.orderCharge.deleteMany({ where: { company_id, order_id: id } });
-        if (chargesArr.length > 0) {
+        if (normalizedCharges.length > 0) {
           await tx.orderCharge.createMany({
-            data: chargesArr.map(c => ({
+            data: normalizedCharges.map(c => ({
               company_id,
               order_id: id,
               type: c.type || "OTHER",
-              title: c.title?.toString() || "Charge",
+              title: c.title?.toString() || c.label || "Charge",
               amount: Number(c.amount || 0),
               meta: c.meta || null
             }))
@@ -904,7 +902,7 @@ exports.updateOrder = async (req, res) => {
         }
       }
 
-      const total = Number(existing.subtotal) + Number(total_charges);
+      const total = Number(existing.subtotal) + Number(existing.tax_subtotal || 0) + Number(total_charges) + Number(existing.round_off || 0);
 
       const order = await tx.order.update({
         where: { id },
@@ -1014,7 +1012,7 @@ exports.updateOrderStatus = async (req, res) => {
             quantity: Number(row.quantity),
             remarks: `Order ${existing.order_no} dispatched`,
             created_by: req.user.id
-          });
+          }, { tracked_lines: row.tracked_lines || [] });
         }
       }
 

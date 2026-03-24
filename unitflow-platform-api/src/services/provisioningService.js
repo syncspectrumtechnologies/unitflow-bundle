@@ -6,6 +6,7 @@ const httpError = require('../utils/httpError');
 const { provisionTenant, syncTenantConfig, syncTenantStatus } = require('./coreSyncService');
 const { createAudit } = require('./auditService');
 const { createNotification } = require('./notificationService');
+const { isPrivilegedRuntimeAccess } = require('./runtimeAccessService');
 
 let workerTimer = null;
 let workerRunning = false;
@@ -24,6 +25,29 @@ function configVersionHash(payload) {
 
 function getLatestSubscription(tenant) {
   return Array.isArray(tenant?.subscriptions) ? tenant.subscriptions[0] || null : null;
+}
+
+function buildPrivilegedSubscriptionSnapshot() {
+  return {
+    id: null,
+    status: 'ACTIVE',
+    billing_cycle: 'YEARLY',
+    seat_limit: Number.MAX_SAFE_INTEGER,
+    renews_at: null,
+    ends_at: null,
+    plan: {
+      code: 'SUPER_ADMIN',
+      name: 'Super Admin Access',
+      plan_type: 'MULTI_USER',
+      feature_limits_json: { enabled_modules: ['core_erp'], privileged_runtime_access: true }
+    },
+    plan_snapshot_json: {
+      code: 'SUPER_ADMIN',
+      name: 'Super Admin Access',
+      plan_type: 'MULTI_USER',
+      feature_limits_json: { enabled_modules: ['core_erp'], privileged_runtime_access: true }
+    }
+  };
 }
 
 function buildProvisioningVersion(tenant, subscription) {
@@ -57,6 +81,19 @@ function buildProvisioningVersion(tenant, subscription) {
       address: item.address,
       is_active: item.is_active
     })).sort((a, b) => a.name.localeCompare(b.name)),
+    sales_companies: (tenant.sales_companies || []).map((item) => ({
+      name: item.name,
+      legal_name: item.legal_name,
+      gstin: item.gstin,
+      phone: item.phone,
+      email: item.email,
+      address: item.address,
+      state: item.state,
+      state_code: item.state_code,
+      is_gst_enabled: item.is_gst_enabled,
+      is_active: item.is_active,
+      same_as_main_company: item.same_as_main_company
+    })).sort((a, b) => a.name.localeCompare(b.name)),
     subscription: subscription ? {
       id: subscription.id,
       status: subscription.status,
@@ -78,6 +115,7 @@ async function loadTenantForProvisioning(tenantId) {
       owner: true,
       config: true,
       locations: { orderBy: { created_at: 'asc' } },
+      sales_companies: { orderBy: { created_at: 'asc' } },
       subscriptions: {
         include: { plan: true },
         orderBy: { created_at: 'desc' },
@@ -118,6 +156,19 @@ function buildProvisionPayload(tenant, subscription, configVersion) {
       code: item.code,
       address: item.address,
       is_active: item.is_active !== false
+    })),
+    sales_companies: (tenant.sales_companies || []).map((item) => ({
+      name: item.name,
+      legal_name: item.legal_name,
+      gstin: item.gstin,
+      phone: item.phone,
+      email: item.email,
+      address: item.address,
+      state: item.state,
+      state_code: item.state_code,
+      is_gst_enabled: item.is_gst_enabled,
+      is_active: item.is_active !== false,
+      same_as_main_company: item.same_as_main_company === true
     })),
     admin_account: {
       email: tenant.owner.email,
@@ -171,7 +222,8 @@ async function runProvisioningJob(tenantId, { reason = 'worker', actorType = 'SY
   const tenant = await loadTenantForProvisioning(tenantId);
   if (!tenant) throw httpError(404, 'Tenant not found');
 
-  const latestSubscription = getLatestSubscription(tenant);
+  const privilegedProvisioning = isPrivilegedRuntimeAccess(tenant);
+  const latestSubscription = getLatestSubscription(tenant) || (privilegedProvisioning ? buildPrivilegedSubscriptionSnapshot() : null);
   if (!latestSubscription || !['ACTIVE', 'GRACE'].includes(latestSubscription.status)) {
     throw httpError(409, 'Tenant does not have an active subscription for provisioning');
   }
@@ -201,18 +253,19 @@ async function runProvisioningJob(tenantId, { reason = 'worker', actorType = 'SY
     await syncTenantConfig(tenant.id, {
       company: payload.company,
       branding: payload.branding,
-      locations: payload.locations
+      locations: payload.locations,
+      sales_companies: payload.sales_companies
     });
     await syncTenantStatus(tenant.id, {
-      is_active: ['ACTIVE', 'GRACE'].includes(latestSubscription.status),
-      subscription_status: String(latestSubscription.status || '').toLowerCase(),
+      is_active: privilegedProvisioning || ['ACTIVE', 'GRACE'].includes(latestSubscription.status),
+      subscription_status: privilegedProvisioning ? 'super_admin' : String(latestSubscription.status || '').toLowerCase(),
       plan_code: payload.subscription.plan_code,
       billing_cycle: payload.subscription.billing_cycle,
       active_until: payload.subscription.active_until,
       trial_ends_at: null
     });
 
-    const targetLifecycleStatus = latestSubscription.status === 'GRACE' ? 'GRACE' : 'ACTIVE';
+    const targetLifecycleStatus = privilegedProvisioning ? 'ACTIVE' : latestSubscription.status === 'GRACE' ? 'GRACE' : 'ACTIVE';
     const updatedTenant = await prisma.tenant.update({
       where: { id: tenant.id },
       data: {

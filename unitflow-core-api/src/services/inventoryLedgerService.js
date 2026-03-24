@@ -1,4 +1,5 @@
 const { Prisma } = require("@prisma/client");
+const { applyTrackedMovementTx, getProductTrackingProfileTx } = require("./trackedInventoryService");
 
 function toNumber(value) {
   const n = typeof value === "string" ? Number(value) : Number(value);
@@ -122,11 +123,44 @@ async function createMovementTx(tx, data, options = {}) {
     allowNegative
   });
 
-  const movement = await tx.inventoryMovement.create({ data });
-  return { movement, balance_after: nextBalance };
+  const movement = await tx.inventoryMovement.create({
+    data: {
+      company_id: data.company_id,
+      factory_id: data.factory_id,
+      product_id: data.product_id,
+      type: data.type,
+      source_type: data.source_type,
+      source_id: data.source_id ?? null,
+      date: data.date ?? new Date(),
+      quantity: data.quantity,
+      unit_cost: data.unit_cost ?? null,
+      remarks: data.remarks ?? null,
+      created_by: data.created_by ?? null
+    }
+  });
+
+  let tracking_lines = [];
+  const requestedTrackedLines = options.tracked_lines || data.tracked_lines || [];
+  const product = await getProductTrackingProfileTx(tx, { company_id: data.company_id, product_id: data.product_id });
+  if ((product.tracking_mode && product.tracking_mode !== "NONE") || (Array.isArray(requestedTrackedLines) && requestedTrackedLines.length)) {
+    tracking_lines = await applyTrackedMovementTx(tx, {
+      movement,
+      tracked_lines: requestedTrackedLines,
+      allow_negative: allowNegative
+    });
+  }
+
+  return { movement, balance_after: nextBalance, tracking_lines };
 }
 
 async function updateMovementTx(tx, existing, nextData, options = {}) {
+  const trackingCount = await tx.inventoryMovementTracking.count({ where: { movement_id: existing.id } });
+  if (trackingCount > 0) {
+    const err = new Error("TRACKED_MOVEMENT_UPDATE_NOT_SUPPORTED");
+    err.statusCode = 400;
+    throw err;
+  }
+
   const oldFactoryId = existing.factory_id;
   const oldProductId = existing.product_id;
   const oldDelta = movementDelta(existing.type, existing.quantity);

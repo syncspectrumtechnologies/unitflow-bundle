@@ -37,6 +37,18 @@ async function makePaymentNoTx(tx, company_id, date = new Date()) {
   return makeScopedNumberTx(tx, company_id, "PAYMENT", "PAY", date);
 }
 
+async function makePurchaseReceiptNoTx(tx, company_id, date = new Date()) {
+  return makeScopedNumberTx(tx, company_id, "PURCHASE_RECEIPT", "GRN", date);
+}
+
+async function makeSupplierReturnNoTx(tx, company_id, date = new Date()) {
+  return makeScopedNumberTx(tx, company_id, "SUPPLIER_RETURN", "SRN", date);
+}
+
+async function makeDeliveryChallanNoTx(tx, company_id, date = new Date()) {
+  return makeScopedNumberTx(tx, company_id, "DELIVERY_CHALLAN", "DC", date);
+}
+
 function legacyFallback(prefix) {
   const d = new Date();
   const timePart = `${d.getHours().toString().padStart(2, "0")}${d.getMinutes().toString().padStart(2, "0")}${d.getSeconds().toString().padStart(2, "0")}`;
@@ -49,3 +61,6 @@ exports.makePaymentNo = () => legacyFallback("PAY");
 exports.makeOrderNoTx = makeOrderNoTx;
 exports.makeInvoiceNoTx = makeInvoiceNoTx;
 exports.makePaymentNoTx = makePaymentNoTx;
+exports.makePurchaseReceiptNoTx = makePurchaseReceiptNoTx;
+exports.makeSupplierReturnNoTx = makeSupplierReturnNoTx;
+exports.makeDeliveryChallanNoTx = makeDeliveryChallanNoTx;

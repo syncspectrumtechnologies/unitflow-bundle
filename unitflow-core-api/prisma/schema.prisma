@@ -67,6 +67,7 @@ enum InvoiceKind {
 enum PurchaseStatus {
   DRAFT
   ORDERED
+  PARTIALLY_RECEIVED
   RECEIVED
   CANCELLED
   CLOSED
@@ -112,19 +113,93 @@ enum ChargeType {
   OTHER
 }
 
+enum GstRegistrationType {
+  REGISTERED
+  UNREGISTERED
+  COMPOSITION
+  EXPORT
+  SEZ
+  EXEMPT
+}
+
+enum GstSupplyType {
+  INTRA_STATE
+  INTER_STATE
+  EXPORT
+}
+
+enum ProductTrackingMode {
+  NONE
+  BARCODE_ONLY
+  SERIAL_ONLY
+  BATCH_ONLY
+  BATCH_EXPIRY
+  SERIAL_BATCH
+  SERIAL_BATCH_EXPIRY
+}
+
+enum SerialStatus {
+  IN_STOCK
+  RESERVED
+  DISPATCHED
+  RETURNED
+  SCRAPPED
+}
+
+enum PurchaseReceiptStatus {
+  DRAFT
+  POSTED
+  CANCELLED
+}
+
+enum SupplierReturnStatus {
+  DRAFT
+  APPROVED
+  DISPATCHED
+  COMPLETED
+  CANCELLED
+}
+
+enum DeliveryChallanStatus {
+  DRAFT
+  ISSUED
+  CLOSED
+  CANCELLED
+}
+
+enum DeliveryChallanKind {
+  OUTWARD
+  INWARD
+  JOB_WORK
+  RETURNABLE
+  NON_RETURNABLE
+}
+
+enum DeliveryChallanReason {
+  SALE
+  RETURN
+  JOB_WORK
+  SAMPLE
+  OTHER
+}
+
 //
 // BASE / TENANT
 //
 
 model Company {
-  id         String  @id @default(cuid())
-  name       String
-  legal_name String?
-  gstin      String?
-  phone      String?
-  email      String?
-  address    String?
-  is_active  Boolean @default(true)
+  id                    String               @id @default(cuid())
+  name                  String
+  legal_name            String?
+  gstin                 String?
+  gst_registration_type GstRegistrationType?
+  phone                 String?
+  email                 String?
+  address               String?
+  state                 String?
+  state_code            String?
+  is_gst_enabled        Boolean              @default(true)
+  is_active             Boolean              @default(true)
 
   created_at DateTime @default(now())
   updated_at DateTime @updatedAt
@@ -135,55 +210,67 @@ model Company {
   permissions Permission[]
 
   // Company-level catalog & CRM
-  product_categories   ProductCategory[]
-  products             Product[]
-  clients              Client[]
-  compliance_reports   ComplianceReport[]
-  UserSession          UserSession[]
-  password_reset_otps  PasswordResetOtp[]
-  UserRoleMap          UserRoleMap[]
-  RolePermissionMap    RolePermissionMap[]
-  UserPermissionMap    UserPermissionMap[]
-  UserFactoryMap       UserFactoryMap[]
-  ActivityLog          ActivityLog[]
-  ClientContact        ClientContact[]
-  ClientProduct        ClientProduct[]
-  ProductionLog        ProductionLog[]
-  InventoryMovement    InventoryMovement[]
-  StockSnapshot        StockSnapshot[]
-  stock_balances       StockBalance[]
-  number_sequences     NumberSequence[]
-  Order                Order[]
-  OrderItem            OrderItem[]
-  OrderCharge          OrderCharge[]
-  OrderStatusHistory   OrderStatusHistory[]
-  OrderFulfillment    OrderFulfillment[]
-  Invoice              Invoice[]
-  InvoiceItem          InvoiceItem[]
-  InvoiceCharge        InvoiceCharge[]
-  InvoiceStatusHistory InvoiceStatusHistory[]
-  Payment              Payment[]
-  PaymentAllocation    PaymentAllocation[]
-  Purchase             Purchase[]
-  PurchaseItem         PurchaseItem[]
-  PurchaseCharge       PurchaseCharge[]
-  PurchaseStatusHistory PurchaseStatusHistory[]
-  MessageTemplate      MessageTemplate[]
-  MessageCampaign      MessageCampaign[]
-  MessageRecipient     MessageRecipient[]
-  MessageLog           MessageLog[]
-  message_dispatch_jobs MessageDispatchJob[]
+  product_categories           ProductCategory[]
+  products                     Product[]
+  clients                      Client[]
+  tax_classes                  TaxClass[]
+  product_barcodes             ProductBarcode[]
+  inventory_batches            InventoryBatch[]
+  inventory_serials            InventorySerial[]
+  inventory_tracking_balances  InventoryTrackingBalance[]
+  inventory_movement_trackings InventoryMovementTracking[]
+  delivery_challans            DeliveryChallan[]
+  delivery_challan_items       DeliveryChallanItem[]
+  purchase_receipts            PurchaseReceipt[]
+  purchase_receipt_items       PurchaseReceiptItem[]
+  supplier_returns             SupplierReturn[]
+  supplier_return_items        SupplierReturnItem[]
+  compliance_reports           ComplianceReport[]
+  UserSession                  UserSession[]
+  password_reset_otps          PasswordResetOtp[]
+  UserRoleMap                  UserRoleMap[]
+  RolePermissionMap            RolePermissionMap[]
+  UserPermissionMap            UserPermissionMap[]
+  UserFactoryMap               UserFactoryMap[]
+  ActivityLog                  ActivityLog[]
+  ClientContact                ClientContact[]
+  ClientProduct                ClientProduct[]
+  ProductionLog                ProductionLog[]
+  InventoryMovement            InventoryMovement[]
+  StockSnapshot                StockSnapshot[]
+  stock_balances               StockBalance[]
+  number_sequences             NumberSequence[]
+  Order                        Order[]
+  OrderItem                    OrderItem[]
+  OrderCharge                  OrderCharge[]
+  OrderStatusHistory           OrderStatusHistory[]
+  OrderFulfillment             OrderFulfillment[]
+  Invoice                      Invoice[]
+  InvoiceItem                  InvoiceItem[]
+  InvoiceCharge                InvoiceCharge[]
+  InvoiceStatusHistory         InvoiceStatusHistory[]
+  Payment                      Payment[]
+  PaymentAllocation            PaymentAllocation[]
+  Purchase                     Purchase[]
+  PurchaseItem                 PurchaseItem[]
+  PurchaseCharge               PurchaseCharge[]
+  PurchaseStatusHistory        PurchaseStatusHistory[]
+  MessageTemplate              MessageTemplate[]
+  MessageCampaign              MessageCampaign[]
+  MessageRecipient             MessageRecipient[]
+  MessageLog                   MessageLog[]
+  message_dispatch_jobs        MessageDispatchJob[]
 
   // Legal entities used for sales (billing company selection on orders/invoices/payments)
-  sales_companies      SalesCompany[]
-  platform_config      CompanyPlatformConfig?
+  sales_companies SalesCompany[]
+  platform_config CompanyPlatformConfig?
 
   // Internal realtime chat + announcements
-  conversations         Conversation[]
-  conversation_members  ConversationMember[]
-  chat_messages         ChatMessage[]
-  broadcast_messages    BroadcastMessage[]
-  broadcast_recipients  BroadcastRecipient[]
+  conversations        Conversation[]
+  conversation_members ConversationMember[]
+  chat_messages        ChatMessage[]
+  broadcast_messages   BroadcastMessage[]
+  broadcast_recipients BroadcastRecipient[]
 
   @@index([is_active])
 }
@@ -191,25 +278,30 @@ model Company {
 // Sales / billing companies within a tenant.
 // Example: one tenant may operate multiple legal entities for invoicing.
 model SalesCompany {
-  id         String  @id @default(cuid())
+  id         String @id @default(cuid())
   company_id String
 
-  name       String
-  legal_name String?
-  gstin      String?
-  phone      String?
-  email      String?
-  address    String?
-  is_active  Boolean @default(true)
+  name                  String
+  legal_name            String?
+  gstin                 String?
+  gst_registration_type GstRegistrationType?
+  phone                 String?
+  email                 String?
+  address               String?
+  state                 String?
+  state_code            String?
+  is_gst_enabled        Boolean?
+  is_active             Boolean              @default(true)
 
   created_at DateTime @default(now())
   updated_at DateTime @updatedAt
 
   company Company @relation(fields: [company_id], references: [id])
 
-  orders   Order[]
-  invoices Invoice[]
-  payments Payment[]
+  orders            Order[]
+  invoices          Invoice[]
+  payments          Payment[]
+  delivery_challans DeliveryChallan[]
 
   @@unique([company_id, name])
   @@index([company_id, is_active])
@@ -221,6 +313,8 @@ model Factory {
   name       String
   code       String?
   address    String?
+  state      String?
+  state_code String?
   is_active  Boolean @default(true)
 
   created_at DateTime @default(now())
@@ -229,15 +323,22 @@ model Factory {
   company Company @relation(fields: [company_id], references: [id])
 
   // Factory-scoped operational data
-  production_logs     ProductionLog[]
-  inventory_movements InventoryMovement[]
-  stock_snapshots     StockSnapshot[]
-  stock_balances      StockBalance[]
-  orders              Order[]
-  order_fulfillments  OrderFulfillment[]
-  invoices            Invoice[]
-  purchases           Purchase[]
-  payments            Payment[]   
+  production_logs              ProductionLog[]
+  inventory_movements          InventoryMovement[]
+  inventory_movement_trackings InventoryMovementTracking[]
+  stock_snapshots              StockSnapshot[]
+  stock_balances               StockBalance[]
+  inventory_batches            InventoryBatch[]
+  inventory_serials            InventorySerial[]
+  inventory_tracking_balances  InventoryTrackingBalance[]
+  orders                       Order[]
+  order_fulfillments           OrderFulfillment[]
+  invoices                     Invoice[]
+  purchases                    Purchase[]
+  payments                     Payment[]
+  delivery_challans            DeliveryChallan[]
+  purchase_receipts            PurchaseReceipt[]
+  supplier_returns             SupplierReturn[]
 
   user_factory_map UserFactoryMap[]
 
@@ -267,18 +368,18 @@ model User {
 
   company Company @relation(fields: [company_id], references: [id])
 
-  roles_map     UserRoleMap[]
-  permissions_map UserPermissionMap[]
-  factories_map UserFactoryMap[]
-  sessions      UserSession[]
+  roles_map           UserRoleMap[]
+  permissions_map     UserPermissionMap[]
+  factories_map       UserFactoryMap[]
+  sessions            UserSession[]
   password_reset_otps PasswordResetOtp[]
-  activity_logs ActivityLog[]
+  activity_logs       ActivityLog[]
 
   // Internal realtime chat + announcements
-  conversation_members  ConversationMember[]
-  chat_messages_sent    ChatMessage[] @relation("ChatMessageSender")
-  broadcasts_sent       BroadcastMessage[] @relation("BroadcastSender")
-  broadcast_recipients  BroadcastRecipient[]
+  conversation_members ConversationMember[]
+  chat_messages_sent   ChatMessage[]        @relation("ChatMessageSender")
+  broadcasts_sent      BroadcastMessage[]   @relation("BroadcastSender")
+  broadcast_recipients BroadcastRecipient[]
 
   @@index([company_id, status])
   @@index([company_id, is_admin])
@@ -305,13 +406,13 @@ model UserSession {
 }
 
 model PasswordResetOtp {
-  id         String   @id @default(cuid())
+  id         String @id @default(cuid())
   company_id String
   user_id    String
   email      String
 
   otp_hash      String
-  attempt_count Int      @default(0)
+  attempt_count Int       @default(0)
   expires_at    DateTime
   used_at       DateTime?
 
@@ -499,36 +600,53 @@ model ProductCategory {
 }
 
 model Product {
-  id          String  @id @default(cuid())
-  company_id  String
-  category_id String
-  name        String
-  sku         String?
-  unit        String // e.g. KG, PCS, SACK, PACK
-  pack_size   String? // e.g. "25kg sack", "200g pouch" (variant-like)
-  price       Decimal @default(0) @db.Decimal(15, 2) // selling price (default 0)
-  description String?
-  is_active   Boolean @default(true)
+  id              String              @id @default(cuid())
+  company_id      String
+  category_id     String
+  tax_class_id    String?
+  name            String
+  sku             String?
+  unit            String // e.g. KG, PCS, SACK, PACK
+  pack_size       String? // e.g. "25kg sack", "200g pouch" (variant-like)
+  price           Decimal             @default(0) @db.Decimal(15, 2) // selling price (default 0)
+  hsn_sac_code    String?
+  gst_rate        Decimal?            @db.Decimal(5, 2)
+  cess_rate       Decimal?            @db.Decimal(5, 2)
+  tracking_mode   ProductTrackingMode @default(NONE)
+  shelf_life_days Int?
+  description     String?
+  is_active       Boolean             @default(true)
 
   created_at DateTime @default(now())
   updated_at DateTime @updatedAt
 
-  company  Company         @relation(fields: [company_id], references: [id])
-  category ProductCategory @relation(fields: [category_id], references: [id])
+  company   Company         @relation(fields: [company_id], references: [id])
+  category  ProductCategory @relation(fields: [category_id], references: [id])
+  tax_class TaxClass?       @relation(fields: [tax_class_id], references: [id])
 
   // links
-  client_products     ClientProduct[]
-  production_logs     ProductionLog[]
-  inventory_movements InventoryMovement[]
-  order_items         OrderItem[]
-  order_fulfillments  OrderFulfillment[]
-  invoice_items       InvoiceItem[]
-  StockSnapshot       StockSnapshot[]
-  stock_balances      StockBalance[]
+  client_products              ClientProduct[]
+  production_logs              ProductionLog[]
+  inventory_movements          InventoryMovement[]
+  inventory_batches            InventoryBatch[]
+  inventory_serials            InventorySerial[]
+  product_barcodes             ProductBarcode[]
+  inventory_tracking_balances  InventoryTrackingBalance[]
+  inventory_movement_trackings InventoryMovementTracking[]
+  order_items                  OrderItem[]
+  order_fulfillments           OrderFulfillment[]
+  invoice_items                InvoiceItem[]
+  purchase_items               PurchaseItem[]
+  delivery_challan_items       DeliveryChallanItem[]
+  purchase_receipt_items       PurchaseReceiptItem[]
+  supplier_return_items        SupplierReturnItem[]
+  StockSnapshot                StockSnapshot[]
+  stock_balances               StockBalance[]
 
   @@unique([company_id, name, pack_size])
   @@index([company_id, category_id, is_active])
   @@index([company_id, is_active, updated_at])
+  @@index([company_id, tracking_mode])
 }
 
 //
@@ -539,26 +657,29 @@ model Client {
   id         String @id @default(cuid())
   company_id String
 
-  company_name String
-  gstin        String?
-  phone        String?
-  email        String?
-  address      String?
-  city         String?
-  state        String?
-  pincode      String?
+  company_name          String
+  gstin                 String?
+  gst_registration_type GstRegistrationType?
+  phone                 String?
+  email                 String?
+  address               String?
+  city                  String?
+  state                 String?
+  state_code            String?
+  pincode               String?
 
   is_active Boolean @default(true)
 
   created_at DateTime @default(now())
   updated_at DateTime @updatedAt
 
-  company  Company         @relation(fields: [company_id], references: [id])
-  contacts ClientContact[]
-  products ClientProduct[]
-  orders   Order[]
-  invoices Invoice[]
-  Payment  Payment[]
+  company           Company           @relation(fields: [company_id], references: [id])
+  contacts          ClientContact[]
+  products          ClientProduct[]
+  orders            Order[]
+  invoices          Invoice[]
+  Payment           Payment[]
+  delivery_challans DeliveryChallan[]
 
   @@unique([company_id, company_name])
   @@index([company_id, is_active])
@@ -663,6 +784,8 @@ model InventoryMovement {
   factory Factory @relation(fields: [factory_id], references: [id])
   product Product @relation(fields: [product_id], references: [id])
 
+  tracking_lines InventoryMovementTracking[]
+
   @@index([company_id, factory_id, date])
   @@index([company_id, factory_id, product_id, date])
   @@index([company_id, source_type, source_id])
@@ -696,7 +819,7 @@ model StockBalance {
   factory_id String
   product_id String
 
-  quantity   Decimal @default(0) @db.Decimal(15, 2)
+  quantity Decimal @default(0) @db.Decimal(15, 2)
 
   created_at DateTime @default(now())
   updated_at DateTime @updatedAt
@@ -732,10 +855,22 @@ model Order {
   required_by  DateTime?
   delivered_at DateTime?
 
+  place_of_supply_state String?
+  place_of_supply_code  String?
+  supply_type           GstSupplyType?
+  is_gst_invoice        Boolean        @default(true)
+
   // Summary fields (can be derived, but storing helps listing)
   subtotal      Decimal @default(0) @db.Decimal(15, 2)
+  tax_subtotal  Decimal @default(0) @db.Decimal(15, 2)
   total_charges Decimal @default(0) @db.Decimal(15, 2)
+  cgst_total    Decimal @default(0) @db.Decimal(15, 2)
+  sgst_total    Decimal @default(0) @db.Decimal(15, 2)
+  igst_total    Decimal @default(0) @db.Decimal(15, 2)
+  cess_total    Decimal @default(0) @db.Decimal(15, 2)
+  round_off     Decimal @default(0) @db.Decimal(15, 2)
   total         Decimal @default(0) @db.Decimal(15, 2)
+  gst_breakup   Json?
 
   notes          String?
   internal_notes String?
@@ -746,17 +881,18 @@ model Order {
   created_at DateTime @default(now())
   updated_at DateTime @updatedAt
 
-  company Company @relation(fields: [company_id], references: [id])
-  factory Factory @relation(fields: [factory_id], references: [id])
-  client  Client  @relation(fields: [client_id], references: [id])
+  company       Company       @relation(fields: [company_id], references: [id])
+  factory       Factory       @relation(fields: [factory_id], references: [id])
+  client        Client        @relation(fields: [client_id], references: [id])
   sales_company SalesCompany? @relation(fields: [sales_company_id], references: [id])
 
-  items          OrderItem[]
-  charges        OrderCharge[]
-  status_history OrderStatusHistory[]
-  invoices       Invoice[]
-  payments       Payment[]
-  fulfillments   OrderFulfillment[]
+  items             OrderItem[]
+  charges           OrderCharge[]
+  status_history    OrderStatusHistory[]
+  invoices          Invoice[]
+  payments          Payment[]
+  fulfillments      OrderFulfillment[]
+  delivery_challans DeliveryChallan[]
 
   @@unique([company_id, order_no])
   @@index([company_id, factory_id, order_date])
@@ -773,10 +909,22 @@ model OrderItem {
   order_id   String
   product_id String
 
-  quantity   Decimal  @db.Decimal(15, 2)
-  unit_price Decimal  @db.Decimal(15, 2)
-  discount   Decimal? @db.Decimal(15, 2) // item-level discount
-  line_total Decimal  @db.Decimal(15, 2)
+  quantity      Decimal  @db.Decimal(15, 2)
+  unit_price    Decimal  @db.Decimal(15, 2)
+  discount      Decimal? @db.Decimal(15, 2) // item-level discount
+  line_total    Decimal  @db.Decimal(15, 2)
+  hsn_sac_code  String?
+  gst_rate      Decimal? @db.Decimal(5, 2)
+  cgst_rate     Decimal? @db.Decimal(5, 2)
+  sgst_rate     Decimal? @db.Decimal(5, 2)
+  igst_rate     Decimal? @db.Decimal(5, 2)
+  cess_rate     Decimal? @db.Decimal(5, 2)
+  taxable_value Decimal? @db.Decimal(15, 2)
+  tax_amount    Decimal? @db.Decimal(15, 2)
+  cgst_amount   Decimal? @db.Decimal(15, 2)
+  sgst_amount   Decimal? @db.Decimal(15, 2)
+  igst_amount   Decimal? @db.Decimal(15, 2)
+  cess_amount   Decimal? @db.Decimal(15, 2)
 
   remarks String?
 
@@ -833,8 +981,8 @@ model OrderFulfillment {
   factory_id String
   product_id String
 
-  quantity   Decimal @db.Decimal(15, 2)
-  is_active  Boolean @default(true)
+  quantity  Decimal @db.Decimal(15, 2)
+  is_active Boolean @default(true)
 
   created_by String?
   created_at DateTime @default(now())
@@ -863,9 +1011,10 @@ model Invoice {
   // Billing / legal entity used for this sale
   sales_company_id String?
 
-  order_id   String? // generated from order if present
-  invoice_no String
-  kind       InvoiceKind @default(TAX_INVOICE)
+  order_id             String? // generated from order if present
+  reference_invoice_id String?
+  invoice_no           String
+  kind                 InvoiceKind @default(TAX_INVOICE)
 
   // Default: pending (unpaid). Proforma invoices use DRAFT explicitly in code.
   status InvoiceStatus @default(PENDING)
@@ -873,9 +1022,21 @@ model Invoice {
   issue_date DateTime  @default(now())
   due_date   DateTime?
 
+  place_of_supply_state String?
+  place_of_supply_code  String?
+  supply_type           GstSupplyType?
+  is_gst_invoice        Boolean        @default(true)
+
   subtotal      Decimal @default(0) @db.Decimal(15, 2)
+  tax_subtotal  Decimal @default(0) @db.Decimal(15, 2)
   total_charges Decimal @default(0) @db.Decimal(15, 2)
+  cgst_total    Decimal @default(0) @db.Decimal(15, 2)
+  sgst_total    Decimal @default(0) @db.Decimal(15, 2)
+  igst_total    Decimal @default(0) @db.Decimal(15, 2)
+  cess_total    Decimal @default(0) @db.Decimal(15, 2)
+  round_off     Decimal @default(0) @db.Decimal(15, 2)
   total         Decimal @default(0) @db.Decimal(15, 2)
+  gst_breakup   Json?
 
   notes     String?
   is_active Boolean @default(true)
@@ -884,11 +1045,13 @@ model Invoice {
   created_at DateTime @default(now())
   updated_at DateTime @updatedAt
 
-  company Company @relation(fields: [company_id], references: [id])
-  factory Factory @relation(fields: [factory_id], references: [id])
-  client  Client  @relation(fields: [client_id], references: [id])
-  order   Order?  @relation(fields: [order_id], references: [id])
-  sales_company SalesCompany? @relation(fields: [sales_company_id], references: [id])
+  company           Company       @relation(fields: [company_id], references: [id])
+  factory           Factory       @relation(fields: [factory_id], references: [id])
+  client            Client        @relation(fields: [client_id], references: [id])
+  order             Order?        @relation(fields: [order_id], references: [id])
+  sales_company     SalesCompany? @relation(fields: [sales_company_id], references: [id])
+  reference_invoice Invoice?      @relation("InvoiceReference", fields: [reference_invoice_id], references: [id])
+  referenced_by     Invoice[]     @relation("InvoiceReference")
 
   items          InvoiceItem[]
   charges        InvoiceCharge[]
@@ -903,6 +1066,7 @@ model Invoice {
   @@index([company_id, is_active, issue_date])
   @@index([company_id, is_active, status, issue_date])
   @@index([company_id, order_id])
+  @@index([company_id, reference_invoice_id])
 }
 
 model InvoiceItem {
@@ -911,10 +1075,22 @@ model InvoiceItem {
   invoice_id String
   product_id String
 
-  quantity   Decimal  @db.Decimal(15, 2)
-  unit_price Decimal  @db.Decimal(15, 2)
-  discount   Decimal? @db.Decimal(15, 2)
-  line_total Decimal  @db.Decimal(15, 2)
+  quantity      Decimal  @db.Decimal(15, 2)
+  unit_price    Decimal  @db.Decimal(15, 2)
+  discount      Decimal? @db.Decimal(15, 2)
+  line_total    Decimal  @db.Decimal(15, 2)
+  hsn_sac_code  String?
+  gst_rate      Decimal? @db.Decimal(5, 2)
+  cgst_rate     Decimal? @db.Decimal(5, 2)
+  sgst_rate     Decimal? @db.Decimal(5, 2)
+  igst_rate     Decimal? @db.Decimal(5, 2)
+  cess_rate     Decimal? @db.Decimal(5, 2)
+  taxable_value Decimal? @db.Decimal(15, 2)
+  tax_amount    Decimal? @db.Decimal(15, 2)
+  cgst_amount   Decimal? @db.Decimal(15, 2)
+  sgst_amount   Decimal? @db.Decimal(15, 2)
+  igst_amount   Decimal? @db.Decimal(15, 2)
+  cess_amount   Decimal? @db.Decimal(15, 2)
 
   remarks String?
 
@@ -975,7 +1151,7 @@ model Payment {
   client_id  String
 
   // Link payment to a specific order (in addition to invoice allocations)
-  order_id   String?
+  order_id String?
 
   // Billing / legal entity used for this sale
   sales_company_id String?
@@ -994,10 +1170,10 @@ model Payment {
   created_by String?
   created_at DateTime @default(now())
 
-  company Company @relation(fields: [company_id], references: [id])
-  client  Client  @relation(fields: [client_id], references: [id])
-  factory Factory? @relation(fields: [factory_id], references: [id])
-  order   Order?   @relation(fields: [order_id], references: [id])
+  company       Company       @relation(fields: [company_id], references: [id])
+  client        Client        @relation(fields: [client_id], references: [id])
+  factory       Factory?      @relation(fields: [factory_id], references: [id])
+  order         Order?        @relation(fields: [order_id], references: [id])
   sales_company SalesCompany? @relation(fields: [sales_company_id], references: [id])
 
   allocations PaymentAllocation[]
@@ -1039,20 +1215,32 @@ model Purchase {
   company_id String
   factory_id String
 
-  purchase_no String
-  status      PurchaseStatus @default(DRAFT)
-  purchase_date DateTime @default(now())
+  purchase_no   String
+  status        PurchaseStatus @default(DRAFT)
+  purchase_date DateTime       @default(now())
 
-  vendor_name  String
-  vendor_gstin String?
-  vendor_phone String?
-  vendor_email String?
-  vendor_address String?
+  vendor_name                  String
+  vendor_gstin                 String?
+  vendor_gst_registration_type GstRegistrationType?
+  vendor_phone                 String?
+  vendor_email                 String?
+  vendor_address               String?
+  vendor_state                 String?
+  vendor_state_code            String?
+  supply_type                  GstSupplyType?
 
   notes String?
 
-  subtotal Decimal @db.Decimal(15, 2) @default(0)
-  total    Decimal @db.Decimal(15, 2) @default(0)
+  subtotal      Decimal @default(0) @db.Decimal(15, 2)
+  tax_subtotal  Decimal @default(0) @db.Decimal(15, 2)
+  total_charges Decimal @default(0) @db.Decimal(15, 2)
+  cgst_total    Decimal @default(0) @db.Decimal(15, 2)
+  sgst_total    Decimal @default(0) @db.Decimal(15, 2)
+  igst_total    Decimal @default(0) @db.Decimal(15, 2)
+  cess_total    Decimal @default(0) @db.Decimal(15, 2)
+  round_off     Decimal @default(0) @db.Decimal(15, 2)
+  total         Decimal @default(0) @db.Decimal(15, 2)
+  gst_breakup   Json?
 
   is_active Boolean @default(true)
 
@@ -1066,6 +1254,8 @@ model Purchase {
   items    PurchaseItem[]
   charges  PurchaseCharge[]
   timeline PurchaseStatusHistory[]
+  receipts PurchaseReceipt[]
+  returns  SupplierReturn[]
 
   @@unique([company_id, factory_id, purchase_no])
   @@index([company_id, factory_id, status])
@@ -1074,50 +1264,74 @@ model Purchase {
 }
 
 model PurchaseItem {
-  id         String @id @default(cuid())
-  company_id String
+  id          String  @id @default(cuid())
+  company_id  String
   purchase_id String
+  product_id  String?
 
-  description String
-  quantity Decimal @db.Decimal(15, 2)
-  unit_price Decimal @db.Decimal(15, 2)
-  line_total Decimal @db.Decimal(15, 2)
+  description       String
+  unit              String?
+  quantity          Decimal  @db.Decimal(15, 2)
+  received_quantity Decimal  @default(0) @db.Decimal(15, 2)
+  returned_quantity Decimal  @default(0) @db.Decimal(15, 2)
+  unit_price        Decimal  @db.Decimal(15, 2)
+  discount          Decimal? @db.Decimal(15, 2)
+  line_total        Decimal  @db.Decimal(15, 2)
+  hsn_sac_code      String?
+  gst_rate          Decimal? @db.Decimal(5, 2)
+  cgst_rate         Decimal? @db.Decimal(5, 2)
+  sgst_rate         Decimal? @db.Decimal(5, 2)
+  igst_rate         Decimal? @db.Decimal(5, 2)
+  cess_rate         Decimal? @db.Decimal(5, 2)
+  taxable_value     Decimal? @db.Decimal(15, 2)
+  tax_amount        Decimal? @db.Decimal(15, 2)
+  cgst_amount       Decimal? @db.Decimal(15, 2)
+  sgst_amount       Decimal? @db.Decimal(15, 2)
+  igst_amount       Decimal? @db.Decimal(15, 2)
+  cess_amount       Decimal? @db.Decimal(15, 2)
 
   created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
 
-  company Company @relation(fields: [company_id], references: [id])
-  purchase Purchase @relation(fields: [purchase_id], references: [id])
+  company       Company               @relation(fields: [company_id], references: [id])
+  purchase      Purchase              @relation(fields: [purchase_id], references: [id])
+  product       Product?              @relation(fields: [product_id], references: [id])
+  receipt_items PurchaseReceiptItem[]
+  return_items  SupplierReturnItem[]
 
   @@index([company_id, purchase_id])
+  @@index([company_id, product_id])
 }
 
 model PurchaseCharge {
-  id         String @id @default(cuid())
-  company_id String
+  id          String @id @default(cuid())
+  company_id  String
   purchase_id String
 
-  label String
-  amount Decimal @db.Decimal(15, 2)
+  type   ChargeType @default(OTHER)
+  label  String
+  amount Decimal    @db.Decimal(15, 2)
+  meta   Json?
 
   created_at DateTime @default(now())
 
-  company Company @relation(fields: [company_id], references: [id])
+  company  Company  @relation(fields: [company_id], references: [id])
   purchase Purchase @relation(fields: [purchase_id], references: [id])
 
   @@index([company_id, purchase_id])
 }
 
 model PurchaseStatusHistory {
-  id         String @id @default(cuid())
-  company_id String
+  id          String         @id @default(cuid())
+  company_id  String
   purchase_id String
-  status     PurchaseStatus
-  note       String?
+  status      PurchaseStatus
+  note        String?
 
   created_by String?
   created_at DateTime @default(now())
 
-  company Company @relation(fields: [company_id], references: [id])
+  company  Company  @relation(fields: [company_id], references: [id])
   purchase Purchase @relation(fields: [purchase_id], references: [id])
 
   @@index([company_id, purchase_id])
@@ -1196,8 +1410,8 @@ model MessageCampaign {
   company  Company          @relation(fields: [company_id], references: [id])
   template MessageTemplate? @relation(fields: [template_id], references: [id])
 
-  recipients MessageRecipient[]
-  logs       MessageLog[]
+  recipients    MessageRecipient[]
+  logs          MessageLog[]
   dispatch_jobs MessageDispatchJob[]
 
   @@index([company_id, factory_id, created_at])
@@ -1259,14 +1473,14 @@ model MessageLog {
 
 // ------------------------------------------------------------
 model MessageDispatchJob {
-  id         String            @id @default(cuid())
-  company_id String
+  id          String            @id @default(cuid())
+  company_id  String
   campaign_id String
-  status     DispatchJobStatus @default(QUEUED)
+  status      DispatchJobStatus @default(QUEUED)
 
-  created_by String?
-  created_at DateTime @default(now())
-  started_at DateTime?
+  created_by  String?
+  created_at  DateTime  @default(now())
+  started_at  DateTime?
   finished_at DateTime?
 
   total_recipients Int @default(0)
@@ -1302,7 +1516,7 @@ model Conversation {
   created_at DateTime @default(now())
   updated_at DateTime @updatedAt
 
-  company  Company             @relation(fields: [company_id], references: [id])
+  company  Company              @relation(fields: [company_id], references: [id])
   members  ConversationMember[]
   messages ChatMessage[]
 
@@ -1312,7 +1526,7 @@ model Conversation {
 }
 
 model ConversationMember {
-  id              String   @id @default(cuid())
+  id              String @id @default(cuid())
   company_id      String
   conversation_id String
   user_id         String
@@ -1331,7 +1545,7 @@ model ConversationMember {
 }
 
 model ChatMessage {
-  id              String   @id @default(cuid())
+  id              String @id @default(cuid())
   company_id      String
   conversation_id String
   sender_id       String
@@ -1354,10 +1568,10 @@ enum BroadcastTargetType {
 }
 
 model BroadcastMessage {
-  id         String             @id @default(cuid())
-  company_id String
-  sender_id  String
-  body       String
+  id          String              @id @default(cuid())
+  company_id  String
+  sender_id   String
+  body        String
   target_type BroadcastTargetType
 
   // Snapshot of target ids used at send-time
@@ -1374,13 +1588,13 @@ model BroadcastMessage {
 }
 
 model BroadcastRecipient {
-  id           String   @id @default(cuid())
+  id           String @id @default(cuid())
   company_id   String
   broadcast_id String
   user_id      String
 
-  seen_at   DateTime?
-  created_at DateTime @default(now())
+  seen_at    DateTime?
+  created_at DateTime  @default(now())
 
   company   Company          @relation(fields: [company_id], references: [id])
   broadcast BroadcastMessage @relation(fields: [broadcast_id], references: [id])
@@ -1392,12 +1606,299 @@ model BroadcastRecipient {
   @@index([company_id, broadcast_id])
 }
 
+model TaxClass {
+  id          String   @id @default(cuid())
+  company_id  String
+  name        String
+  description String?
+  gst_rate    Decimal  @db.Decimal(5, 2)
+  cess_rate   Decimal  @default(0) @db.Decimal(5, 2)
+  is_active   Boolean  @default(true)
+  created_at  DateTime @default(now())
+  updated_at  DateTime @updatedAt
 
+  company  Company   @relation(fields: [company_id], references: [id])
+  products Product[]
+
+  @@unique([company_id, name])
+  @@index([company_id, is_active])
+}
+
+model ProductBarcode {
+  id         String   @id @default(cuid())
+  company_id String
+  product_id String
+  code       String
+  alias_type String? // PRIMARY / PACK / INTERNAL / SUPPLIER
+  is_primary Boolean  @default(false)
+  is_active  Boolean  @default(true)
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  company Company @relation(fields: [company_id], references: [id])
+  product Product @relation(fields: [product_id], references: [id])
+
+  @@unique([company_id, code])
+  @@index([company_id, product_id, is_active])
+}
+
+model InventoryBatch {
+  id               String    @id @default(cuid())
+  company_id       String
+  factory_id       String
+  product_id       String
+  batch_no         String
+  expiry_date      DateTime?
+  manufacture_date DateTime?
+  barcode          String?
+  location_label   String?
+  notes            String?
+  created_at       DateTime  @default(now())
+  updated_at       DateTime  @updatedAt
+
+  company            Company                     @relation(fields: [company_id], references: [id])
+  factory            Factory                     @relation(fields: [factory_id], references: [id])
+  product            Product                     @relation(fields: [product_id], references: [id])
+  serials            InventorySerial[]
+  tracking_balances  InventoryTrackingBalance[]
+  movement_trackings InventoryMovementTracking[]
+
+  @@unique([company_id, factory_id, product_id, batch_no])
+  @@index([company_id, product_id, expiry_date])
+  @@index([company_id, factory_id, location_label])
+}
+
+model InventorySerial {
+  id               String       @id @default(cuid())
+  company_id       String
+  factory_id       String
+  product_id       String
+  batch_id         String?
+  serial_no        String
+  barcode          String?
+  expiry_date      DateTime?
+  location_label   String?
+  status           SerialStatus @default(IN_STOCK)
+  last_movement_id String?
+  created_at       DateTime     @default(now())
+  updated_at       DateTime     @updatedAt
+
+  company            Company                     @relation(fields: [company_id], references: [id])
+  factory            Factory                     @relation(fields: [factory_id], references: [id])
+  product            Product                     @relation(fields: [product_id], references: [id])
+  batch              InventoryBatch?             @relation(fields: [batch_id], references: [id])
+  tracking_balances  InventoryTrackingBalance[]
+  movement_trackings InventoryMovementTracking[]
+
+  @@unique([company_id, serial_no])
+  @@index([company_id, product_id, status])
+  @@index([company_id, factory_id, location_label])
+}
+
+model InventoryMovementTracking {
+  id             String    @id @default(cuid())
+  company_id     String
+  factory_id     String
+  product_id     String
+  movement_id    String
+  batch_id       String?
+  serial_id      String?
+  barcode        String?
+  expiry_date    DateTime?
+  location_label String?
+  quantity       Decimal   @db.Decimal(15, 2)
+  created_at     DateTime  @default(now())
+
+  company  Company           @relation(fields: [company_id], references: [id])
+  factory  Factory           @relation(fields: [factory_id], references: [id])
+  product  Product           @relation(fields: [product_id], references: [id])
+  movement InventoryMovement @relation(fields: [movement_id], references: [id])
+  batch    InventoryBatch?   @relation(fields: [batch_id], references: [id])
+  serial   InventorySerial?  @relation(fields: [serial_id], references: [id])
+
+  @@index([company_id, movement_id])
+  @@index([company_id, product_id, batch_id])
+  @@index([company_id, product_id, serial_id])
+}
+
+model InventoryTrackingBalance {
+  id             String    @id @default(cuid())
+  company_id     String
+  factory_id     String
+  product_id     String
+  batch_id       String?
+  serial_id      String?
+  barcode        String?
+  expiry_date    DateTime?
+  location_label String?
+  quantity       Decimal   @default(0) @db.Decimal(15, 2)
+  created_at     DateTime  @default(now())
+  updated_at     DateTime  @updatedAt
+
+  company Company          @relation(fields: [company_id], references: [id])
+  factory Factory          @relation(fields: [factory_id], references: [id])
+  product Product          @relation(fields: [product_id], references: [id])
+  batch   InventoryBatch?  @relation(fields: [batch_id], references: [id])
+  serial  InventorySerial? @relation(fields: [serial_id], references: [id])
+
+  @@unique([company_id, factory_id, product_id, batch_id, serial_id, barcode, location_label])
+  @@index([company_id, product_id, expiry_date])
+  @@index([company_id, factory_id, location_label])
+}
+
+model DeliveryChallan {
+  id                    String                @id @default(cuid())
+  company_id            String
+  factory_id            String
+  client_id             String?
+  order_id              String?
+  sales_company_id      String?
+  challan_no            String
+  kind                  DeliveryChallanKind   @default(OUTWARD)
+  reason                DeliveryChallanReason @default(SALE)
+  status                DeliveryChallanStatus @default(DRAFT)
+  issue_date            DateTime              @default(now())
+  place_of_supply_state String?
+  place_of_supply_code  String?
+  notes                 String?
+  is_active             Boolean               @default(true)
+  created_by            String?
+  created_at            DateTime              @default(now())
+  updated_at            DateTime              @updatedAt
+
+  company       Company               @relation(fields: [company_id], references: [id])
+  factory       Factory               @relation(fields: [factory_id], references: [id])
+  client        Client?               @relation(fields: [client_id], references: [id])
+  order         Order?                @relation(fields: [order_id], references: [id])
+  sales_company SalesCompany?         @relation(fields: [sales_company_id], references: [id])
+  items         DeliveryChallanItem[]
+
+  @@unique([company_id, challan_no])
+  @@index([company_id, factory_id, issue_date])
+  @@index([company_id, status])
+}
+
+model DeliveryChallanItem {
+  id                  String   @id @default(cuid())
+  company_id          String
+  delivery_challan_id String
+  product_id          String
+  quantity            Decimal  @db.Decimal(15, 2)
+  remarks             String?
+  created_at          DateTime @default(now())
+
+  company          Company         @relation(fields: [company_id], references: [id])
+  delivery_challan DeliveryChallan @relation(fields: [delivery_challan_id], references: [id])
+  product          Product         @relation(fields: [product_id], references: [id])
+
+  @@index([company_id, delivery_challan_id])
+  @@index([company_id, product_id])
+}
+
+model PurchaseReceipt {
+  id           String                @id @default(cuid())
+  company_id   String
+  factory_id   String
+  purchase_id  String
+  receipt_no   String
+  status       PurchaseReceiptStatus @default(DRAFT)
+  receipt_date DateTime              @default(now())
+  notes        String?
+  created_by   String?
+  created_at   DateTime              @default(now())
+  updated_at   DateTime              @updatedAt
+
+  company  Company               @relation(fields: [company_id], references: [id])
+  factory  Factory               @relation(fields: [factory_id], references: [id])
+  purchase Purchase              @relation(fields: [purchase_id], references: [id])
+  items    PurchaseReceiptItem[]
+
+  @@unique([company_id, receipt_no])
+  @@index([company_id, purchase_id, receipt_date])
+}
+
+model PurchaseReceiptItem {
+  id                    String   @id @default(cuid())
+  company_id            String
+  purchase_receipt_id   String
+  purchase_item_id      String?
+  product_id            String?
+  inventory_movement_id String?
+  description           String
+  ordered_quantity      Decimal? @db.Decimal(15, 2)
+  quantity              Decimal  @db.Decimal(15, 2)
+  accepted_quantity     Decimal  @db.Decimal(15, 2)
+  rejected_quantity     Decimal  @default(0) @db.Decimal(15, 2)
+  unit_cost             Decimal? @db.Decimal(15, 2)
+  location_label        String?
+  notes                 String?
+  created_at            DateTime @default(now())
+  updated_at            DateTime @updatedAt
+
+  company          Company         @relation(fields: [company_id], references: [id])
+  purchase_receipt PurchaseReceipt @relation(fields: [purchase_receipt_id], references: [id])
+  purchase_item    PurchaseItem?   @relation(fields: [purchase_item_id], references: [id])
+  product          Product?        @relation(fields: [product_id], references: [id])
+
+  @@index([company_id, purchase_receipt_id])
+  @@index([company_id, purchase_item_id])
+  @@index([company_id, product_id])
+}
+
+model SupplierReturn {
+  id             String               @id @default(cuid())
+  company_id     String
+  factory_id     String
+  purchase_id    String
+  return_no      String
+  debit_note_no  String?
+  status         SupplierReturnStatus @default(DRAFT)
+  return_date    DateTime             @default(now())
+  reason_summary String?
+  notes          String?
+  created_by     String?
+  created_at     DateTime             @default(now())
+  updated_at     DateTime             @updatedAt
+
+  company  Company              @relation(fields: [company_id], references: [id])
+  factory  Factory              @relation(fields: [factory_id], references: [id])
+  purchase Purchase             @relation(fields: [purchase_id], references: [id])
+  items    SupplierReturnItem[]
+
+  @@unique([company_id, return_no])
+  @@index([company_id, purchase_id, return_date])
+}
+
+model SupplierReturnItem {
+  id                    String   @id @default(cuid())
+  company_id            String
+  supplier_return_id    String
+  purchase_item_id      String?
+  product_id            String?
+  inventory_movement_id String?
+  description           String
+  quantity              Decimal  @db.Decimal(15, 2)
+  unit_price            Decimal? @db.Decimal(15, 2)
+  reason_code           String?
+  reason_note           String?
+  location_label        String?
+  created_at            DateTime @default(now())
+  updated_at            DateTime @updatedAt
+
+  company         Company        @relation(fields: [company_id], references: [id])
+  supplier_return SupplierReturn @relation(fields: [supplier_return_id], references: [id])
+  purchase_item   PurchaseItem?  @relation(fields: [purchase_item_id], references: [id])
+  product         Product?       @relation(fields: [product_id], references: [id])
+
+  @@index([company_id, supplier_return_id])
+  @@index([company_id, purchase_item_id])
+  @@index([company_id, product_id])
+}
 
 model CompanyPlatformConfig {
-  id                      String   @id @default(cuid())
-  company_id              String   @unique
-  tenant_slug             String?  @unique
+  id                      String    @id @default(cuid())
+  company_id              String    @unique
+  tenant_slug             String?   @unique
   app_title               String?
   theme_color             String?
   logo_url                String?
@@ -1411,8 +1912,8 @@ model CompanyPlatformConfig {
   trial_ends_at           DateTime?
   active_until            DateTime?
   platform_last_synced_at DateTime?
-  created_at              DateTime @default(now())
-  updated_at              DateTime @updatedAt
+  created_at              DateTime  @default(now())
+  updated_at              DateTime  @updatedAt
 
   company Company @relation(fields: [company_id], references: [id])
 

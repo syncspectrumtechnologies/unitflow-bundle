@@ -21,9 +21,15 @@ const createInvoiceValidation = validate({
   body: {
     client_id: { type: "string" },
     order_id: { type: "string" },
+    sales_company_id: { type: "string" },
+    reference_invoice_id: { type: "string" },
     kind: { type: "enum", values: ["PROFORMA", "TAX_INVOICE", "CREDIT_NOTE", "DEBIT_NOTE"] },
     issue_date: { type: "date" },
     due_date: { type: "date" },
+    place_of_supply_code: { type: "string" },
+    place_of_supply_state: { type: "string" },
+    supply_type: { type: "enum", values: ["INTRA_STATE", "INTER_STATE", "EXPORT"] },
+    is_gst_invoice: { type: "boolean" },
     notes: { type: "string" },
     items: { type: "array" },
     charges: { type: "array" }

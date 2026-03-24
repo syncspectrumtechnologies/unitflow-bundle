@@ -101,6 +101,8 @@ model Account {
   name              String
   password_hash     String
   status            AccountStatus       @default(ACTIVE)
+  is_super_admin    Boolean             @default(false)
+  runtime_access_exempt Boolean         @default(false)
   email_verified_at DateTime?
   phone_verified_at DateTime?
   last_login_at     DateTime?
@@ -154,6 +156,7 @@ model Tenant {
   owner         Account                @relation("TenantOwner", fields: [owner_account_id], references: [id])
   config        TenantConfig?
   locations     TenantLocation[]
+  sales_companies TenantSalesCompany[]
   subscriptions TenantSubscription[]
   payments      Payment[]
   devices       Device[]
@@ -190,6 +193,29 @@ model TenantLocation {
   is_active  Boolean  @default(true)
   created_at DateTime @default(now())
   updated_at DateTime @updatedAt
+
+  tenant Tenant @relation(fields: [tenant_id], references: [id])
+
+  @@unique([tenant_id, name])
+  @@index([tenant_id, is_active])
+}
+
+model TenantSalesCompany {
+  id                   String   @id @default(cuid())
+  tenant_id            String
+  name                 String
+  legal_name           String?
+  gstin                String?
+  phone                String?
+  email                String?
+  address              String?
+  state                String?
+  state_code           String?
+  is_gst_enabled       Boolean?
+  is_active            Boolean  @default(true)
+  same_as_main_company Boolean  @default(false)
+  created_at           DateTime @default(now())
+  updated_at           DateTime @updatedAt
 
   tenant Tenant @relation(fields: [tenant_id], references: [id])
 

@@ -15,11 +15,13 @@ exports.createClient = async (req, res) => {
     const {
       company_name,
       gstin,
+      gst_registration_type,
       phone,
       email,
       address,
       city,
       state,
+      state_code,
       pincode
     } = req.body;
 
@@ -44,11 +46,13 @@ exports.createClient = async (req, res) => {
         company_id,
         company_name: company_name.trim(),
         gstin: gstin?.trim() || null,
+        gst_registration_type: gst_registration_type?.toString().trim().toUpperCase() || null,
         phone: phone?.trim() || null,
         email: email?.trim() || null,
         address: address?.trim() || null,
         city: city?.trim() || null,
         state: state?.trim() || null,
+        state_code: state_code?.toString().trim() || null,
         pincode: pincode?.trim() || null,
         is_active: true
       }
@@ -108,10 +112,13 @@ exports.getClients = async (req, res) => {
       select: {
         id: true,
         company_name: true,
+        gstin: true,
+        gst_registration_type: true,
         phone: true,
         email: true,
         city: true,
         state: true,
+        state_code: true,
         is_active: true,
         created_at: true,
         updated_at: true,
@@ -223,11 +230,13 @@ exports.updateClient = async (req, res) => {
     const {
       company_name,
       gstin,
+      gst_registration_type,
       phone,
       email,
       address,
       city,
       state,
+      state_code,
       pincode,
       is_active
     } = req.body;
@@ -255,11 +264,13 @@ exports.updateClient = async (req, res) => {
       data: {
         company_name: company_name ? company_name.trim() : undefined,
         gstin: gstin !== undefined ? (gstin?.trim() || null) : undefined,
+        gst_registration_type: gst_registration_type !== undefined ? (gst_registration_type ? gst_registration_type.toString().trim().toUpperCase() : null) : undefined,
         phone: phone !== undefined ? (phone?.trim() || null) : undefined,
         email: email !== undefined ? (email?.trim() || null) : undefined,
         address: address !== undefined ? (address?.trim() || null) : undefined,
         city: city !== undefined ? (city?.trim() || null) : undefined,
         state: state !== undefined ? (state?.trim() || null) : undefined,
+        state_code: state_code !== undefined ? (state_code?.toString().trim() || null) : undefined,
         pincode: pincode !== undefined ? (pincode?.trim() || null) : undefined,
         is_active: typeof is_active === "boolean" ? is_active : undefined
       }

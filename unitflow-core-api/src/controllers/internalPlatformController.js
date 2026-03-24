@@ -16,6 +16,80 @@ function sanitizeString(value, fallback = null) {
   return str.length ? str : fallback;
 }
 
+function sanitizeBoolean(value, fallback = undefined) {
+  return typeof value === 'boolean' ? value : fallback;
+}
+
+
+async function syncSalesCompanies(tx, companyId, salesCompanies = [], companyPayload = {}) {
+  const normalized = (Array.isArray(salesCompanies) && salesCompanies.length ? salesCompanies : [{
+    name: companyPayload.name,
+    legal_name: companyPayload.legal_name || companyPayload.name,
+    gstin: companyPayload.gstin,
+    phone: companyPayload.phone,
+    email: companyPayload.email,
+    address: companyPayload.address,
+    state: companyPayload.state,
+    state_code: companyPayload.state_code,
+    is_gst_enabled: companyPayload.is_gst_enabled,
+    is_active: true
+  }]).map((item) => ({
+    name: sanitizeString(item.name),
+    legal_name: sanitizeString(item.legal_name),
+    gstin: sanitizeString(item.gstin),
+    phone: sanitizeString(item.phone),
+    email: sanitizeString(item.email),
+    address: sanitizeString(item.address),
+    state: sanitizeString(item.state),
+    state_code: sanitizeString(item.state_code),
+    is_gst_enabled: typeof item.is_gst_enabled === 'boolean' ? item.is_gst_enabled : sanitizeBoolean(companyPayload.is_gst_enabled, true),
+    is_active: item.is_active !== false
+  })).filter((item) => item.name);
+
+  if (!normalized.length) {
+    throw new Error('At least one sales company is required for tenant provisioning');
+  }
+
+  const incomingNames = normalized.map((item) => item.name);
+  for (const item of normalized) {
+    await tx.salesCompany.upsert({
+      where: { company_id_name: { company_id: companyId, name: item.name } },
+      update: {
+        legal_name: item.legal_name,
+        gstin: item.gstin,
+        phone: item.phone,
+        email: item.email,
+        address: item.address,
+        state: item.state,
+        state_code: item.state_code,
+        is_gst_enabled: item.is_gst_enabled,
+        is_active: item.is_active !== false
+      },
+      create: {
+        company_id: companyId,
+        name: item.name,
+        legal_name: item.legal_name,
+        gstin: item.gstin,
+        phone: item.phone,
+        email: item.email,
+        address: item.address,
+        state: item.state,
+        state_code: item.state_code,
+        is_gst_enabled: item.is_gst_enabled,
+        is_active: item.is_active !== false
+      }
+    });
+  }
+
+  await tx.salesCompany.updateMany({
+    where: {
+      company_id: companyId,
+      name: { notIn: incomingNames }
+    },
+    data: { is_active: false }
+  });
+}
+
 async function upsertCompanyConfig(tx, companyId, payload = {}) {
   return tx.companyPlatformConfig.upsert({
     where: { company_id: companyId },
@@ -121,7 +195,8 @@ exports.provisionTenant = async (req, res, next) => {
       branding = {},
       locations = [],
       admin_account = {},
-      subscription = {}
+      subscription = {},
+      sales_companies = []
     } = req.body || {};
 
     if (!tenant_id) {
@@ -149,6 +224,7 @@ exports.provisionTenant = async (req, res, next) => {
               phone: sanitizeString(company.phone),
               email: sanitizeString(company.email),
               address: sanitizeString(company.address),
+              is_gst_enabled: sanitizeBoolean(company.is_gst_enabled, true),
               is_active: true
             }
           })
@@ -161,6 +237,7 @@ exports.provisionTenant = async (req, res, next) => {
               phone: sanitizeString(company.phone),
               email: sanitizeString(company.email),
               address: sanitizeString(company.address),
+              is_gst_enabled: sanitizeBoolean(company.is_gst_enabled, true),
               is_active: true
             }
           });
@@ -193,6 +270,8 @@ exports.provisionTenant = async (req, res, next) => {
           }
         });
       }
+
+      await syncSalesCompanies(tx, companyRecord.id, sales_companies, company);
 
       const existingUser = await tx.user.findFirst({
         where: {
@@ -265,7 +344,7 @@ exports.updateTenantStatus = async (req, res, next) => {
 exports.syncTenantConfig = async (req, res, next) => {
   try {
     const { tenantId } = req.params;
-    const { company = {}, branding = {}, locations } = req.body || {};
+    const { company = {}, branding = {}, locations, sales_companies } = req.body || {};
 
     await prisma.$transaction(async (tx) => {
       if (Object.keys(company).length) {
@@ -277,7 +356,8 @@ exports.syncTenantConfig = async (req, res, next) => {
             gstin: company.gstin !== undefined ? sanitizeString(company.gstin) : undefined,
             phone: company.phone !== undefined ? sanitizeString(company.phone) : undefined,
             email: company.email !== undefined ? sanitizeString(company.email) : undefined,
-            address: company.address !== undefined ? sanitizeString(company.address) : undefined
+            address: company.address !== undefined ? sanitizeString(company.address) : undefined,
+            is_gst_enabled: company.is_gst_enabled !== undefined ? sanitizeBoolean(company.is_gst_enabled) : undefined
           }
         });
       }
@@ -312,6 +392,10 @@ exports.syncTenantConfig = async (req, res, next) => {
           });
         }
       }
+
+      if (Array.isArray(sales_companies)) {
+        await syncSalesCompanies(tx, tenantId, sales_companies, company);
+      }
     });
 
     return res.json({ ok: true, synced: true, tenant_id: tenantId });
@@ -327,6 +411,7 @@ exports.getTenantSnapshot = async (req, res, next) => {
       where: { id: tenantId },
       include: {
         factories: { select: { id: true, name: true, code: true, address: true, is_active: true } },
+        sales_companies: { select: { id: true, name: true, legal_name: true, gstin: true, phone: true, email: true, address: true, state: true, state_code: true, is_gst_enabled: true, is_active: true } },
         platform_config: true,
         users: { where: { is_admin: true }, select: { id: true, email: true, name: true, status: true } }
       }

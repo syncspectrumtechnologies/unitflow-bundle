@@ -2,6 +2,10 @@ const prisma = require("../config/db");
 const logActivity = require("../utils/activityLogger");
 const stockService = require("../services/stockService");
 const { createMovementTx } = require("../services/inventoryLedgerService");
+const { getTrackedStockView } = require("../services/trackedInventoryService");
+const { buildTempPdfPath } = require("../utils/fileStorage");
+const { streamPdfAndDelete } = require("../utils/pdfResponse");
+const { generateProductBarcodeLabelsToFile } = require("../services/pdf/barcodeLabelPdf");
 const { getPagination, buildPaginationMeta } = require("../utils/pagination");
 const { factoryWhere, requireSingleFactory } = require("../utils/factoryScope");
 
@@ -28,7 +32,7 @@ exports.createIn = async (req, res) => {
     const company_id = req.user.company_id;
     const factory_id = requireSingleFactory(req);
 
-    const { product_id, quantity, date, remarks, unit_cost } = req.body;
+    const { product_id, quantity, date, remarks, unit_cost, tracked_lines } = req.body;
 
     if (!product_id) return res.status(400).json({ message: "product_id is required" });
 
@@ -55,7 +59,7 @@ exports.createIn = async (req, res) => {
       unit_cost: unit_cost !== undefined && unit_cost !== null ? unit_cost : null,
       remarks: remarks?.toString() || null,
       created_by: req.user.id
-    }));
+    }, { tracked_lines }));
 
     await logActivity({
       company_id,
@@ -79,7 +83,7 @@ exports.createOut = async (req, res) => {
     const company_id = req.user.company_id;
     const factory_id = requireSingleFactory(req);
 
-    const { product_id, quantity, date, remarks } = req.body;
+    const { product_id, quantity, date, remarks, tracked_lines } = req.body;
 
     if (!product_id) return res.status(400).json({ message: "product_id is required" });
 
@@ -107,7 +111,7 @@ exports.createOut = async (req, res) => {
         quantity: qty,
         remarks: remarks?.toString() || null,
         created_by: req.user.id
-      })));
+      }, { tracked_lines })));
     } catch (err) {
       if (err?.message === "INSUFFICIENT_STOCK") {
         return res.status(400).json({ message: "Insufficient stock", ...err.meta });
@@ -137,7 +141,7 @@ exports.createAdjustment = async (req, res) => {
     const company_id = req.user.company_id;
     const factory_id = requireSingleFactory(req);
 
-    const { product_id, quantity, date, remarks } = req.body;
+    const { product_id, quantity, date, remarks, tracked_lines } = req.body;
 
     if (!product_id) return res.status(400).json({ message: "product_id is required" });
 
@@ -167,7 +171,7 @@ exports.createAdjustment = async (req, res) => {
         quantity: q,
         remarks: remarks?.toString() || null,
         created_by: req.user.id
-      }, { allowNegativeAdjustment: true })));
+      }, { allowNegativeAdjustment: true, tracked_lines })));
     } catch (err) {
       if (err?.message === "INSUFFICIENT_STOCK") {
         return res.status(400).json({ message: "Insufficient stock", ...err.meta });
@@ -227,9 +231,11 @@ exports.getMovements = async (req, res) => {
             name: true,
             unit: true,
             pack_size: true,
+            tracking_mode: true,
             category: { select: { id: true, name: true } }
           }
-        }
+        },
+        tracking_lines: { include: { batch: true, serial: true } }
       }
     };
 
@@ -403,5 +409,64 @@ exports.getStock = async (req, res) => {
   } catch (err) {
     console.error("getStock error:", err);
     return res.status(500).json({ message: "Internal server error" });
+  }
+};
+
+exports.getTrackedStock = async (req, res) => {
+  try {
+    const company_id = req.user.company_id;
+    const factory_ids = req.factory_id ? [req.factory_id] : (Array.isArray(req.factory_ids) ? req.factory_ids : []);
+    const rows = await getTrackedStockView(prisma, {
+      company_id,
+      factory_ids,
+      product_id: (req.query.product_id || "").toString().trim() || undefined,
+      q: (req.query.q || "").toString().trim() || undefined,
+      include_zero: parseBoolean(req.query.include_zero)
+    });
+    return res.json(rows);
+  } catch (err) {
+    console.error("getTrackedStock error:", err);
+    return res.status(500).json({ message: "Internal server error" });
+  }
+};
+
+exports.resolveBarcode = async (req, res) => {
+  try {
+    const company_id = req.user.company_id;
+    const code = (req.query.code || req.body?.code || "").toString().trim();
+    if (!code) return res.status(400).json({ message: "code is required" });
+
+    const productBarcode = await prisma.productBarcode.findFirst({
+      where: { company_id, code, is_active: true },
+      include: { product: { select: { id: true, name: true, sku: true, unit: true, tracking_mode: true } } }
+    });
+
+    const serial = await prisma.inventorySerial.findFirst({
+      where: { company_id, OR: [{ serial_no: code }, { barcode: code }] },
+      include: { product: { select: { id: true, name: true, tracking_mode: true } }, batch: true }
+    });
+
+    const batch = await prisma.inventoryBatch.findFirst({
+      where: { company_id, OR: [{ batch_no: code }, { barcode: code }] },
+      include: { product: { select: { id: true, name: true, tracking_mode: true } } }
+    });
+
+    return res.json({ product_barcode: productBarcode, serial, batch });
+  } catch (err) {
+    console.error("resolveBarcode error:", err);
+    return res.status(500).json({ message: "Internal server error" });
+  }
+};
+
+exports.getProductBarcodeLabelsPdf = async (req, res) => {
+  try {
+    const company_id = req.user.company_id;
+    const product_id = req.params.productId;
+    const outPath = buildTempPdfPath("barcode-labels", company_id, req.factory_id || "all", product_id);
+    await generateProductBarcodeLabelsToFile({ company_id, product_id, outPath });
+    return streamPdfAndDelete({ res, filePath: outPath, filename: `barcode-labels-${product_id}.pdf`, inline: true });
+  } catch (err) {
+    console.error("getProductBarcodeLabelsPdf error:", err);
+    return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
   }
 };

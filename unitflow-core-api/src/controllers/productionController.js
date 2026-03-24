@@ -15,7 +15,7 @@ exports.createProduction = async (req, res) => {
     const company_id = req.user.company_id;
     const factory_id = requireSingleFactory(req);
 
-    const { product_id, date, quantity, remarks } = req.body;
+    const { product_id, date, quantity, remarks, tracked_lines, consumptions = [] } = req.body;
 
     if (!product_id) return res.status(400).json({ message: "product_id is required" });
     if (quantity === undefined || quantity === null) return res.status(400).json({ message: "quantity is required" });
@@ -46,6 +46,33 @@ exports.createProduction = async (req, res) => {
         }
       });
 
+      const consumptionRows = Array.isArray(consumptions) ? consumptions : [];
+      for (const row of consumptionRows) {
+        if (!row.product_id) {
+          const err = new Error("consumptions.product_id is required");
+          err.statusCode = 400;
+          throw err;
+        }
+        const consumeQty = Number(row.quantity);
+        if (!Number.isFinite(consumeQty) || consumeQty <= 0) {
+          const err = new Error("consumptions.quantity must be > 0");
+          err.statusCode = 400;
+          throw err;
+        }
+        await createMovementTx(tx, {
+          company_id,
+          factory_id,
+          product_id: row.product_id,
+          type: "OUT",
+          source_type: "PRODUCTION",
+          source_id: productionLog.id,
+          date: prodDate,
+          quantity: consumeQty,
+          remarks: row.remarks?.toString() || `Production consumption for ${productionLog.id}`,
+          created_by: req.user.id
+        }, { tracked_lines: row.tracked_lines || [] });
+      }
+
       const { movement } = await createMovementTx(tx, {
         company_id,
         factory_id,
@@ -57,7 +84,7 @@ exports.createProduction = async (req, res) => {
         quantity: qty,
         remarks: remarks?.toString() || null,
         created_by: req.user.id
-      });
+      }, { tracked_lines });
 
       return { productionLog, movement };
     });
@@ -155,7 +182,7 @@ exports.updateProduction = async (req, res) => {
     });
     if (!existing) return res.status(404).json({ message: "Production log not found" });
 
-    const { product_id, date, quantity, remarks } = req.body;
+    const { product_id, date, quantity, remarks, tracked_lines, consumptions = [] } = req.body;
 
     let nextQty = existing.quantity;
     if (quantity !== undefined && quantity !== null) {

@@ -22,13 +22,32 @@ function isRuntimeProvisionReady(tenant) {
   return Boolean(tenant?.runtime_company_id) && ['READY', 'SYNC_PENDING'].includes(String(tenant?.runtime_provision_status || ''));
 }
 
-function assertRuntimeEligible(tenant) {
+function isPrivilegedRuntimeAccess(tenant) {
+  return Boolean(tenant?.owner?.is_super_admin && tenant?.owner?.runtime_access_exempt);
+}
+
+function assertRuntimeEligible(tenant, { allowPrivilegedBypass = false } = {}) {
   if (!tenant) throw httpError(404, 'Tenant not found');
-  if (!['ACTIVE', 'GRACE'].includes(tenant.lifecycle_status)) {
-    throw httpError(403, 'Tenant is not active for runtime access');
-  }
   if (!isRuntimeProvisionReady(tenant)) {
     throw httpError(403, 'Tenant provisioning is not complete yet');
+  }
+
+  if (allowPrivilegedBypass && isPrivilegedRuntimeAccess(tenant)) {
+    if (tenant.owner?.status !== 'ACTIVE') throw httpError(403, 'Super admin owner account is disabled');
+    return {
+      status: 'ACTIVE',
+      seat_limit: Number.MAX_SAFE_INTEGER,
+      plan: {
+        code: 'SUPER_ADMIN',
+        name: 'Super Admin Access',
+        plan_type: 'MULTI_USER'
+      },
+      privileged_bypass: true
+    };
+  }
+
+  if (!['ACTIVE', 'GRACE'].includes(tenant.lifecycle_status)) {
+    throw httpError(403, 'Tenant is not active for runtime access');
   }
 
   const latestSubscription = getLatestSubscription(tenant);
@@ -126,7 +145,12 @@ async function maybeTouchDevice(deviceId) {
   await prisma.device.updateMany({ where: { id: deviceId }, data: { last_seen_at: new Date() } });
 }
 
-async function enforceSeatPolicy({ tenant, latestSubscription, runtimeUser, forceSeatTransfer = false, seatTransferUserId = null }) {
+async function enforceSeatPolicy({ tenant, latestSubscription, runtimeUser, forceSeatTransfer = false, seatTransferUserId = null, allowPrivilegedBypass = false }) {
+  if (allowPrivilegedBypass && latestSubscription?.privileged_bypass) {
+    const activeSessions = await getActiveRuntimeSessions(tenant.id);
+    return { activeSeats: groupActiveSeats(activeSessions), displacedSeat: null, bypassed: true };
+  }
+
   const activeSessions = await getActiveRuntimeSessions(tenant.id);
   const activeSeats = groupActiveSeats(activeSessions);
   const runtimeUserId = String(runtimeUser.id);
@@ -151,17 +175,17 @@ async function enforceSeatPolicy({ tenant, latestSubscription, runtimeUser, forc
         action: 'seat.transferred',
         metadata: { from_user: conflictingSeat.runtime_user_email, to_user: runtimeUser.email, reason: 'single_user_transfer' }
       });
-      return { activeSeats, displacedSeat: conflictingSeat };
+      return { activeSeats, displacedSeat: conflictingSeat, bypassed: false };
     }
-    return { activeSeats, displacedSeat: null };
+    return { activeSeats, displacedSeat: null, bypassed: false };
   }
 
   if (existingSeat) {
-    return { activeSeats, displacedSeat: null };
+    return { activeSeats, displacedSeat: null, bypassed: false };
   }
 
   if (activeSeats.length < latestSubscription.seat_limit) {
-    return { activeSeats, displacedSeat: null };
+    return { activeSeats, displacedSeat: null, bypassed: false };
   }
 
   if (!forceSeatTransfer) {
@@ -188,18 +212,25 @@ async function enforceSeatPolicy({ tenant, latestSubscription, runtimeUser, forc
       reason: 'multi_user_transfer'
     }
   });
-  return { activeSeats, displacedSeat: targetSeat };
+  return { activeSeats, displacedSeat: targetSeat, bypassed: false };
 }
 
-async function upsertRuntimeDevice({ tenant, accountId, deviceFingerprint, deviceName, platform, osVersion, appVersion, forceTakeover = false, runtimeUser = null, forceSeatTransfer = false, seatTransferUserId = null }) {
+async function upsertRuntimeDevice({ tenant, accountId, deviceFingerprint, deviceName, platform, osVersion, appVersion, forceTakeover = false, runtimeUser = null, forceSeatTransfer = false, seatTransferUserId = null, allowPrivilegedBypass = false }) {
   if (!deviceFingerprint) throw httpError(400, 'device_fingerprint is required');
 
-  const latestSubscription = assertRuntimeEligible(tenant);
-  const seatPolicy = await enforceSeatPolicy({ tenant, latestSubscription, runtimeUser: runtimeUser || { id: 'owner', email: null }, forceSeatTransfer, seatTransferUserId });
+  const latestSubscription = assertRuntimeEligible(tenant, { allowPrivilegedBypass });
+  const seatPolicy = await enforceSeatPolicy({
+    tenant,
+    latestSubscription,
+    runtimeUser: runtimeUser || { id: 'owner', email: null },
+    forceSeatTransfer,
+    seatTransferUserId,
+    allowPrivilegedBypass
+  });
   const fingerprintHash = hashDeviceFingerprint(deviceFingerprint);
   const activeOtherDevices = tenant.devices.filter((d) => d.is_active && d.device_fingerprint_hash !== fingerprintHash && !d.revoked_at);
 
-  if (latestSubscription.plan.plan_type === 'SINGLE_USER' && activeOtherDevices.length > 0 && !forceTakeover) {
+  if (!latestSubscription.privileged_bypass && latestSubscription.plan.plan_type === 'SINGLE_USER' && activeOtherDevices.length > 0 && !forceTakeover) {
     throw httpError(409, 'Another device is already active for this single-user workspace', {
       code: 'ACTIVE_DEVICE_CONFLICT',
       active_devices: activeOtherDevices.map((d) => ({ id: d.id, device_name: d.device_name, platform: d.platform, last_seen_at: d.last_seen_at })),
@@ -213,12 +244,13 @@ async function upsertRuntimeDevice({ tenant, accountId, deviceFingerprint, devic
       actorId: runtimeUser.id,
       tenantId: tenant.id,
       entityType: 'device',
-      action: 'runtime.device.suspicious',
+      action: latestSubscription.privileged_bypass ? 'runtime.device.observed' : 'runtime.device.suspicious',
       metadata: {
         device_name: deviceName,
         platform,
         existing_active_devices: activeOtherDevices.map((d) => ({ id: d.id, device_name: d.device_name, platform: d.platform, last_seen_at: d.last_seen_at })),
-        force_takeover: forceTakeover
+        force_takeover: forceTakeover,
+        privileged_runtime_access: latestSubscription.privileged_bypass
       }
     });
   }
@@ -262,11 +294,12 @@ async function upsertRuntimeDevice({ tenant, accountId, deviceFingerprint, devic
   return { device, latestSubscription, seatPolicy };
 }
 
-async function createRuntimeSession({ tenant, accountId, deviceId, runtimeUser }) {
-  const latestSubscription = assertRuntimeEligible(tenant);
+async function createRuntimeSession({ tenant, accountId, deviceId, runtimeUser, allowPrivilegedBypass = false }) {
+  const latestSubscription = assertRuntimeEligible(tenant, { allowPrivilegedBypass });
   const role = runtimeUser.role || (runtimeUser.is_admin ? 'ADMIN' : (Array.isArray(runtimeUser.roles) ? runtimeUser.roles[0] : 'STAFF')) || 'STAFF';
   const plan = latestSubscription.plan?.code || latestSubscription.plan_snapshot_json?.code || latestSubscription.plan?.plan_type || null;
   const companyId = tenant.runtime_company_id || tenant.id;
+  const accessMode = latestSubscription.privileged_bypass ? 'SUPER_ADMIN_BYPASS' : 'STANDARD';
 
   const { token, jti } = signRuntimeToken({
     user_id: runtimeUser.id,
@@ -276,7 +309,9 @@ async function createRuntimeSession({ tenant, accountId, deviceId, runtimeUser }
     plan,
     role,
     roles: Array.isArray(runtimeUser.roles) ? runtimeUser.roles : [],
-    device_id: deviceId
+    device_id: deviceId,
+    access_mode: accessMode,
+    super_admin_owner: Boolean(tenant.owner?.is_super_admin)
   }, env.runtimeJwtExpiresIn);
 
   const expiresAt = new Date(Date.now() + expiresInToMs(env.runtimeJwtExpiresIn));
@@ -291,7 +326,7 @@ async function createRuntimeSession({ tenant, accountId, deviceId, runtimeUser }
     }
   });
 
-  return { token, session, plan, role };
+  return { token, session, plan, role, access_mode: accessMode };
 }
 
 async function validateRuntimeSession({ jti, touch = false }) {
@@ -300,6 +335,7 @@ async function validateRuntimeSession({ jti, touch = false }) {
     include: {
       tenant: {
         include: {
+          owner: true,
           subscriptions: { include: { plan: true }, orderBy: { created_at: 'desc' }, take: 1 }
         }
       }
@@ -309,7 +345,7 @@ async function validateRuntimeSession({ jti, touch = false }) {
   if (!session || session.revoked_at || session.expires_at <= new Date()) return { valid: false };
 
   try {
-    const latestSubscription = assertRuntimeEligible(session.tenant);
+    const latestSubscription = assertRuntimeEligible(session.tenant, { allowPrivilegedBypass: true });
     if (touch) {
       await prisma.runtimeSession.updateMany({ where: { id: session.id }, data: { last_seen_at: new Date() } });
       await maybeTouchDevice(session.device_id);
@@ -320,7 +356,8 @@ async function validateRuntimeSession({ jti, touch = false }) {
       tenant_id: session.tenant_id,
       account_id: session.account_id,
       device_id: session.device_id,
-      subscription_status: latestSubscription.status
+      subscription_status: latestSubscription.status,
+      privileged_runtime_access: Boolean(latestSubscription.privileged_bypass)
     };
   } catch (_error) {
     return { valid: false };
@@ -357,6 +394,7 @@ async function listTenantSessions(tenantId) {
 
 module.exports = {
   assertRuntimeEligible,
+  isPrivilegedRuntimeAccess,
   upsertRuntimeDevice,
   createRuntimeSession,
   validateRuntimeSession,

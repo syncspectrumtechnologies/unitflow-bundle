@@ -4,6 +4,7 @@ const { makeInvoiceNoTx } = require("../utils/numbering");
 const { requireSingleFactory } = require("../utils/factoryScope");
 const { invoiceVisibilityWhere } = require("../utils/factoryVisibility");
 const { syncInvoiceFromOrderTx } = require("../services/orderInvoiceService");
+const { resolveSalesGstContextTx, buildSalesItemsFromPayloadTx, summarizeCharges } = require("../services/documentTaxService");
 const { getPagination, buildPaginationMeta } = require("../utils/pagination");
 
 function parseDateOrNull(v) {
@@ -101,6 +102,7 @@ exports.getInvoiceById = async (req, res) => {
         client: true,
         factory: true,
         sales_company: true,
+        reference_invoice: { select: { id: true, invoice_no: true, kind: true } },
         order: {
           select: {
             id: true,
@@ -139,173 +141,142 @@ exports.createInvoice = async (req, res) => {
 
     const {
       client_id,
-      order_id,     // optional: generate from order
-      kind,         // PROFORMA / TAX_INVOICE
+      order_id,
+      kind,
       issue_date,
       due_date,
       notes,
       items,
-      charges
+      charges,
+      sales_company_id,
+      reference_invoice_id,
+      is_gst_invoice
     } = req.body;
 
     const issue = parseDateOrNull(issue_date) || new Date();
     const due = due_date !== undefined ? (parseDateOrNull(due_date) || null) : null;
-
     const invoiceKind = kind || "TAX_INVOICE";
-    // Default statuses:
-    // - TAX_INVOICE: PENDING
-    // - PROFORMA: DRAFT
     const initialStatus = String(invoiceKind).toUpperCase() === "PROFORMA" ? "DRAFT" : "PENDING";
 
-    let finalClientId = client_id;
-
-    // If this is an order-linked invoice, enforce the 1:1 invariant.
-    // Older frontends may still call "generate invoice" for an order; we treat it as "ensure + return".
     let orderInvoiceAlreadyExisted = false;
     if (order_id) {
-      const existing = await prisma.invoice.findFirst({
-        where: { company_id, order_id, is_active: true },
-        select: { id: true }
-      });
+      if (is_gst_invoice !== undefined) {
+        return res.status(400).json({ message: "For order-linked invoices, GST mode is inherited from the order." });
+      }
+      const existing = await prisma.invoice.findFirst({ where: { company_id, order_id, is_active: true }, select: { id: true } });
       orderInvoiceAlreadyExisted = !!existing;
     }
 
     const created = await prisma.$transaction(async (tx) => {
-      let computedItems = [];
-      let computedCharges = [];
-
       if (order_id) {
-        // Order-based invoice is a 1:1 derived document.
-        // If it already exists, just return it. If it doesn't, create it and keep it in sync.
         await syncInvoiceFromOrderTx(tx, { company_id, order_id, user_id: req.user.id });
-
         const existing = await tx.invoice.findFirst({
           where: { company_id, order_id, is_active: true },
           include: { items: true, charges: true }
         });
         if (!existing) throw new Error("ORDER_NOT_FOUND");
-
         return existing;
-      } else {
-        // manual creation must provide client_id + items
-        if (!finalClientId) throw new Error("CLIENT_REQUIRED");
-        if (!Array.isArray(items) || items.length === 0) throw new Error("ITEMS_REQUIRED");
-
-        // validate products exist
-        const productIds = [...new Set(items.map(i => i.product_id))];
-        const products = await tx.product.findMany({
-          where: { company_id, id: { in: productIds }, is_active: true },
-          select: { id: true }
-        });
-        if (products.length !== productIds.length) throw new Error("PRODUCT_NOT_FOUND");
-
-        // ✅ FIX: use product connect + company connect
-        computedItems = items.map(it => {
-          const qty = Number(it.quantity);
-          const price = Number(it.unit_price);
-          const disc = it.discount !== undefined && it.discount !== null ? Number(it.discount) : 0;
-          if (!it.product_id) throw new Error("PRODUCT_REQUIRED");
-          if (!Number.isFinite(qty) || qty <= 0) throw new Error("INVALID_QTY");
-          if (!Number.isFinite(price) || price < 0) throw new Error("INVALID_PRICE");
-
-          return {
-            company: { connect: { id: company_id } },
-            product: { connect: { id: it.product_id } },
-            quantity: qty,
-            unit_price: price,
-            discount: disc || null,
-            line_total: calcLineTotal(qty, price, disc),
-            remarks: it.remarks?.toString() || null
-          };
-        });
-
-        // ✅ FIX: add company connect to charges
-        computedCharges = Array.isArray(charges)
-          ? charges.map(c => ({
-              company: { connect: { id: company_id } },
-              type: c.type || "OTHER",
-              title: c.title?.toString() || "Charge",
-              amount: Number(c.amount || 0),
-              meta: c.meta || null
-            }))
-          : [];
       }
 
-      // client check
-      const client = await tx.client.findFirst({
-        where: { id: finalClientId, company_id, is_active: true }
-      });
-      if (!client) throw new Error("CLIENT_NOT_FOUND");
+      if (!client_id) throw new Error("CLIENT_REQUIRED");
+      if (!Array.isArray(items) || items.length === 0) throw new Error("ITEMS_REQUIRED");
 
-      const subtotal = computedItems.reduce((acc, it) => acc + Number(it.line_total), 0);
-      const total_charges = sumCharges(computedCharges.map(c => ({ amount: c.amount })));
-      const total = subtotal + total_charges;
+      const gstContext = await resolveSalesGstContextTx(tx, { company_id, sales_company_id, client_id, explicit_is_gst_invoice: is_gst_invoice });
+      const built = await buildSalesItemsFromPayloadTx(tx, { company_id, client_id, items, supply_type: gstContext.supply_type, is_gst_invoice: gstContext.is_gst_invoice });
+      const normalizedCharges = summarizeCharges(charges || []);
+      const chargeTotal = normalizedCharges.reduce((sum, row) => sum + Number(row.amount || 0), 0);
+      const total = Number(built.totals.total) + Number(chargeTotal);
 
-      const invoice = await tx.invoice.create({
+      return tx.invoice.create({
         data: {
-          // keep these scalars as-is (do NOT change unnecessarily)
           company_id,
           factory_id,
-          client_id: finalClientId,
-          order_id: order_id || null,
-
+          client_id,
+          order_id: null,
+          sales_company_id: sales_company_id || null,
+          reference_invoice_id: reference_invoice_id || null,
           invoice_no: await makeInvoiceNoTx(tx, company_id, issue),
           kind: invoiceKind,
           status: initialStatus,
           issue_date: issue,
           due_date: due,
-          subtotal,
-          total_charges,
+          place_of_supply_state: gstContext.place_of_supply_state,
+          place_of_supply_code: gstContext.place_of_supply_code,
+          supply_type: gstContext.supply_type,
+          is_gst_invoice: gstContext.is_gst_invoice,
+          subtotal: built.totals.subtotal,
+          tax_subtotal: built.totals.tax_subtotal,
+          total_charges: chargeTotal,
+          cgst_total: built.totals.cgst_total,
+          sgst_total: built.totals.sgst_total,
+          igst_total: built.totals.igst_total,
+          cess_total: built.totals.cess_total,
+          round_off: built.totals.round_off,
           total,
+          gst_breakup: built.totals.gst_breakup,
           notes: notes?.toString() || null,
           is_active: true,
           created_by: req.user.id,
-
-          items: { create: computedItems },
-          charges: { create: computedCharges },
-
+          items: {
+            createMany: {
+              data: built.items.map((it) => ({ company_id, ...it }))
+            }
+          },
+          charges: {
+            createMany: {
+              data: normalizedCharges.map((c) => ({ company_id, type: c.type, title: c.title || c.label, amount: c.amount, meta: c.meta || null }))
+            }
+          },
           status_history: {
             create: {
-              // ✅ FIX: required company relation
-              company: { connect: { id: company_id } },
+              company_id,
               status: initialStatus,
-              note: order_id ? "Invoice created from order" : "Invoice created manually",
+              note: "Invoice created",
               created_by: req.user.id
             }
           }
         },
-        include: { items: true, charges: true }
+        include: {
+          items: true,
+          charges: true,
+          client: true,
+          sales_company: true
+        }
       });
-
-      return invoice;
     });
 
-    if (!orderInvoiceAlreadyExisted) {
-      await logActivity({
-        company_id,
-        factory_id,
-        user_id: req.user.id,
-        action: "INVOICE_CREATED",
-        entity_type: "invoice",
-        entity_id: created.id,
-        new_value: created
-      });
-    }
+    await logActivity({
+      company_id,
+      factory_id,
+      user_id: req.user.id,
+      action: order_id ? (orderInvoiceAlreadyExisted ? "INVOICE_FETCHED_FOR_ORDER" : "INVOICE_CREATED_FOR_ORDER") : "INVOICE_CREATED",
+      entity_type: "invoice",
+      entity_id: created.id,
+      new_value: created
+    });
 
-    // If invoice was requested from an order and it already existed, return 200 (idempotent "ensure").
-    return res.status(order_id && orderInvoiceAlreadyExisted ? 200 : 201).json(created);
+    return res.status(order_id && orderInvoiceAlreadyExisted ? 200 : 201).json({
+      ...created,
+      completion_status: completionStatusFromInvoiceStatus(created.status)
+    });
   } catch (err) {
-    if (err.message === "ORDER_NOT_FOUND") return res.status(404).json({ message: "Order not found" });
-    if (err.message === "CLIENT_REQUIRED") return res.status(400).json({ message: "client_id is required for manual invoice" });
-    if (err.message === "ITEMS_REQUIRED") return res.status(400).json({ message: "items are required for manual invoice" });
-    if (err.message === "PRODUCT_NOT_FOUND") return res.status(404).json({ message: "One or more products not found" });
-    if (err.message === "CLIENT_NOT_FOUND") return res.status(404).json({ message: "Client not found" });
-    if (err.message === "PRODUCT_REQUIRED") return res.status(400).json({ message: "product_id required in invoice item" });
-    if (err.message === "INVALID_QTY") return res.status(400).json({ message: "Invalid item quantity" });
-    if (err.message === "INVALID_PRICE") return res.status(400).json({ message: "Invalid item unit_price" });
-
     console.error("createInvoice error:", err);
-    return res.status(500).json({ message: "Internal server error" });
+
+    const map = {
+      ORDER_NOT_FOUND: [404, "Order not found"],
+      CLIENT_REQUIRED: [400, "client_id is required for manual invoices"],
+      ITEMS_REQUIRED: [400, "items array is required for manual invoices"],
+      PRODUCT_NOT_FOUND: [404, "One or more products not found"],
+      PRODUCT_REQUIRED: [400, "Each item requires product_id"],
+      INVALID_QTY: [400, "Each item quantity must be > 0"],
+      INVALID_PRICE: [400, "Each item unit_price must be >= 0"]
+    };
+
+    if (map[err.message]) {
+      const [status, message] = map[err.message];
+      return res.status(status).json({ message });
+    }
+    return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
   }
 };
 
@@ -322,11 +293,9 @@ exports.updateInvoice = async (req, res) => {
     });
     if (!existing) return res.status(404).json({ message: "Invoice not found" });
 
-    const { due_date, notes, items, charges } = req.body;
+    const { due_date, notes, items, charges, sales_company_id, reference_invoice_id, is_gst_invoice } = req.body;
 
-    // Order-linked invoices are derived documents.
-    // To avoid drift, items/charges updates must go through the Order (which auto-syncs the invoice).
-    if (existing.order_id && (items !== undefined || charges !== undefined)) {
+    if (existing.order_id && (items !== undefined || charges !== undefined || is_gst_invoice !== undefined)) {
       return res.status(400).json({
         message: "This invoice is linked to an order. Update the order to change items/charges; the invoice will sync automatically."
       });
@@ -336,109 +305,122 @@ exports.updateInvoice = async (req, res) => {
 
     const updated = await prisma.$transaction(async (tx) => {
       let computedItems = null;
-      let computedCharges = null;
+      let normalizedCharges = null;
+      let totals = null;
+      let gstContext = null;
 
-      if (items !== undefined) {
-        if (!Array.isArray(items) || items.length === 0) throw new Error("ITEMS_REQUIRED");
+      const nextClientId = existing.client_id;
+      const nextSalesCompanyId = sales_company_id !== undefined ? (sales_company_id || null) : existing.sales_company_id;
+      const shouldRebuildItems = !existing.order_id && (
+        items !== undefined ||
+        sales_company_id !== undefined ||
+        is_gst_invoice !== undefined
+      );
 
-        const productIds = [...new Set(items.map(i => i.product_id))];
-        const products = await tx.product.findMany({
-          where: { company_id, id: { in: productIds }, is_active: true },
-          select: { id: true }
-        });
-        if (products.length !== productIds.length) throw new Error("PRODUCT_NOT_FOUND");
-
-        computedItems = items.map(it => {
-          const qty = Number(it.quantity);
-          const price = Number(it.unit_price);
-          const disc = it.discount !== undefined && it.discount !== null ? Number(it.discount) : 0;
-          if (!it.product_id) throw new Error("PRODUCT_REQUIRED");
-          if (!Number.isFinite(qty) || qty <= 0) throw new Error("INVALID_QTY");
-          if (!Number.isFinite(price) || price < 0) throw new Error("INVALID_PRICE");
-          return {
-            product_id: it.product_id,
-            quantity: qty,
-            unit_price: price,
-            discount: disc || null,
-            line_total: calcLineTotal(qty, price, disc),
-            remarks: it.remarks?.toString() || null
-          };
-        });
+      if (shouldRebuildItems) {
+        const baseItems = items !== undefined
+          ? items
+          : existing.items.map((it) => ({
+              product_id: it.product_id,
+              quantity: Number(it.quantity),
+              unit_price: Number(it.unit_price),
+              discount: it.discount !== null && it.discount !== undefined ? Number(it.discount) : null,
+              hsn_sac_code: it.hsn_sac_code,
+              gst_rate: it.gst_rate !== null && it.gst_rate !== undefined ? Number(it.gst_rate) : undefined,
+              cess_rate: it.cess_rate !== null && it.cess_rate !== undefined ? Number(it.cess_rate) : undefined,
+              remarks: it.remarks || undefined
+            }));
+        if (!Array.isArray(baseItems) || baseItems.length === 0) throw new Error("ITEMS_REQUIRED");
+        gstContext = await resolveSalesGstContextTx(tx, { company_id, sales_company_id: nextSalesCompanyId, client_id: nextClientId, explicit_place_of_supply_code: existing.place_of_supply_code, explicit_is_gst_invoice: is_gst_invoice });
+        const built = await buildSalesItemsFromPayloadTx(tx, { company_id, client_id: nextClientId, items: baseItems, supply_type: gstContext.supply_type, is_gst_invoice: gstContext.is_gst_invoice });
+        computedItems = built.items;
+        totals = built.totals;
       }
 
       if (charges !== undefined) {
-        computedCharges = Array.isArray(charges)
-          ? charges.map(c => ({
-              type: c.type || "OTHER",
-              title: c.title?.toString() || "Charge",
-              amount: Number(c.amount || 0),
-              meta: c.meta || null
-            }))
-          : [];
+        normalizedCharges = summarizeCharges(charges || []);
       }
 
-      // replace items
       if (computedItems) {
         await tx.invoiceItem.deleteMany({ where: { company_id, invoice_id: id } });
-        await tx.invoiceItem.createMany({
-          data: computedItems.map(it => ({ company_id, invoice_id: id, ...it }))
-        });
+        await tx.invoiceItem.createMany({ data: computedItems.map((it) => ({ company_id, invoice_id: id, ...it })) });
       }
 
-      // replace charges
-      if (computedCharges !== null) {
+      if (normalizedCharges !== null) {
         await tx.invoiceCharge.deleteMany({ where: { company_id, invoice_id: id } });
-        if (computedCharges.length > 0) {
+        if (normalizedCharges.length > 0) {
           await tx.invoiceCharge.createMany({
-            data: computedCharges.map(c => ({ company_id, invoice_id: id, ...c }))
+            data: normalizedCharges.map((c) => ({ company_id, invoice_id: id, type: c.type, title: c.title || c.label, amount: c.amount, meta: c.meta || null }))
           });
         }
       }
 
-      // recompute totals from DB (source of truth)
-      const dbItems = await tx.invoiceItem.findMany({ where: { company_id, invoice_id: id } });
-      const dbCharges = await tx.invoiceCharge.findMany({ where: { company_id, invoice_id: id } });
+      const itemRows = computedItems || existing.items.map((it) => ({
+        taxable_value: it.taxable_value,
+        tax_amount: it.tax_amount,
+        cgst_amount: it.cgst_amount,
+        sgst_amount: it.sgst_amount,
+        igst_amount: it.igst_amount,
+        cess_amount: it.cess_amount
+      }));
+      const chargeRows = normalizedCharges !== null ? normalizedCharges : existing.charges;
+      const chargeTotal = chargeRows.reduce((sum, c) => sum + Number(c.amount || 0), 0);
+      if (!totals) {
+        totals = {
+          subtotal: Number(existing.subtotal || 0),
+          tax_subtotal: Number(existing.tax_subtotal || 0),
+          cgst_total: Number(existing.cgst_total || 0),
+          sgst_total: Number(existing.sgst_total || 0),
+          igst_total: Number(existing.igst_total || 0),
+          cess_total: Number(existing.cess_total || 0),
+          round_off: Number(existing.round_off || 0),
+          gst_breakup: existing.gst_breakup || []
+        };
+      }
+      const total = Number(totals.subtotal) + Number(totals.tax_subtotal) + Number(chargeTotal) + Number(totals.round_off || 0);
 
-      const subtotal = dbItems.reduce((acc, it) => acc + Number(it.line_total), 0);
-      const total_charges = dbCharges.reduce((acc, c) => acc + Number(c.amount), 0);
-      const total = subtotal + total_charges;
-
-      const inv = await tx.invoice.update({
+      return tx.invoice.update({
         where: { id },
         data: {
           due_date: due,
           notes: notes !== undefined ? (notes?.toString() || null) : undefined,
-          subtotal,
-          total_charges,
-          total
+          sales_company_id: sales_company_id !== undefined ? (sales_company_id || null) : undefined,
+          reference_invoice_id: reference_invoice_id !== undefined ? (reference_invoice_id || null) : undefined,
+          place_of_supply_state: gstContext ? gstContext.place_of_supply_state : undefined,
+          place_of_supply_code: gstContext ? gstContext.place_of_supply_code : undefined,
+          supply_type: gstContext ? gstContext.supply_type : undefined,
+          is_gst_invoice: gstContext ? gstContext.is_gst_invoice : (is_gst_invoice !== undefined ? Boolean(is_gst_invoice) : undefined),
+          subtotal: Number(totals.subtotal),
+          tax_subtotal: Number(totals.tax_subtotal),
+          total_charges: Number(chargeTotal),
+          cgst_total: Number(totals.cgst_total),
+          sgst_total: Number(totals.sgst_total),
+          igst_total: Number(totals.igst_total),
+          cess_total: Number(totals.cess_total),
+          round_off: Number(totals.round_off || 0),
+          total,
+          gst_breakup: totals.gst_breakup
         },
         include: { items: true, charges: true }
       });
-
-      return inv;
     });
 
-    await logActivity({
-      company_id,
-      factory_id,
-      user_id: req.user.id,
-      action: "INVOICE_UPDATED",
-      entity_type: "invoice",
-      entity_id: id,
-      old_value: existing,
-      new_value: updated
-    });
-
-    return res.json(updated);
+    await logActivity({ company_id, factory_id, user_id: req.user.id, action: "INVOICE_UPDATED", entity_type: "invoice", entity_id: id, old_value: existing, new_value: updated });
+    return res.json({ ...updated, completion_status: completionStatusFromInvoiceStatus(updated.status) });
   } catch (err) {
-    if (err.message === "ITEMS_REQUIRED") return res.status(400).json({ message: "items required" });
-    if (err.message === "PRODUCT_NOT_FOUND") return res.status(404).json({ message: "One or more products not found" });
-    if (err.message === "PRODUCT_REQUIRED") return res.status(400).json({ message: "product_id required in invoice item" });
-    if (err.message === "INVALID_QTY") return res.status(400).json({ message: "Invalid item quantity" });
-    if (err.message === "INVALID_PRICE") return res.status(400).json({ message: "Invalid item unit_price" });
-
     console.error("updateInvoice error:", err);
-    return res.status(500).json({ message: "Internal server error" });
+
+    const map = {
+      ITEMS_REQUIRED: [400, "items array is required"],
+      PRODUCT_NOT_FOUND: [404, "One or more products not found"],
+      INVALID_QTY: [400, "Each item quantity must be > 0"],
+      INVALID_PRICE: [400, "Each item unit_price must be >= 0"]
+    };
+    if (map[err.message]) {
+      const [status, message] = map[err.message];
+      return res.status(status).json({ message });
+    }
+    return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
   }
 };
 

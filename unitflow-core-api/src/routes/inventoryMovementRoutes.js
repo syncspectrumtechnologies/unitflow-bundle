@@ -13,14 +13,19 @@ const movementValidation = validate({
     quantity: { required: true, type: "number", min: 0.01 },
     remarks: { type: "string" },
     date: { type: "date" },
-    movement_date: { type: "date" }
+    movement_date: { type: "date" },
+    tracked_lines: { type: "array" }
   }
 });
+const labelValidation = validate({ params: { productId: { required: true, type: "string" } } });
 
 router.use(authMiddleware);
 router.use(factoryAccessMiddleware);
 router.get("/stock", commonQueryValidation, permissionMiddleware(["inventory.view"]), inventoryMovementController.getStock);
 router.get("/stock-summary", commonQueryValidation, permissionMiddleware(["inventory.view"]), inventoryMovementController.getStockSummary);
+router.get("/tracking/stock", commonQueryValidation, permissionMiddleware(["inventory.view"]), inventoryMovementController.getTrackedStock);
+router.get("/barcode/resolve", commonQueryValidation, permissionMiddleware(["inventory.view"]), inventoryMovementController.resolveBarcode);
+router.get("/labels/:productId.pdf", labelValidation, permissionMiddleware(["inventory.view"]), inventoryMovementController.getProductBarcodeLabelsPdf);
 router.get("/movements", commonQueryValidation, permissionMiddleware(["inventory.view"]), inventoryMovementController.getMovements);
 router.post("/movements/in", movementValidation, permissionMiddleware(["inventory.create"]), inventoryMovementController.createIn);
 router.post("/movements/out", movementValidation, permissionMiddleware(["inventory.create"]), inventoryMovementController.createOut);

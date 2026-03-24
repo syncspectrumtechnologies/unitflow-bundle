@@ -14,23 +14,38 @@ const clientValidation = validate({
     phone: { type: "string" },
     address: { type: "string" },
     gstin: { type: "string" },
+    gst_registration_type: { type: "enum", values: ["REGISTERED", "UNREGISTERED", "COMPOSITION", "EXPORT", "SEZ", "EXEMPT"] },
+    state_code: { type: "string" },
+    state: { type: "string" },
+    city: { type: "string" },
+    pincode: { type: "string" },
     notes: { type: "string" }
   }
 });
-const clientIdValidation = validate({ params: { clientId: { required: true, type: "string" } } });
-const inactiveValidation = validate({ query: { days: { type: "integer", min: 1 } } });
+
+const clientIdValidation = validate({
+  params: { clientId: { required: true, type: "string" } }
+});
+
+const inactiveValidation = validate({
+  query: { days: { type: "integer", min: 1 } }
+});
 
 router.use(authMiddleware);
-router.post("/", factoryAccessMiddleware, clientValidation, permissionMiddleware(["clients.create"]), clientController.createClient);
-router.get("/", factoryAccessMiddleware, commonQueryValidation, permissionMiddleware(["clients.view"]), clientController.getClients);
-router.get("/inactive", factoryAccessMiddleware, commonQueryValidation, inactiveValidation, permissionMiddleware(["clients.view"]), clientController.getInactiveClients);
-router.get("/:clientId", factoryAccessMiddleware, clientIdValidation, permissionMiddleware(["clients.view"]), clientController.getClientById);
-router.put("/:clientId", factoryAccessMiddleware, clientIdValidation, clientValidation, permissionMiddleware(["clients.update"]), clientController.updateClient);
-router.delete("/:clientId", factoryAccessMiddleware, clientIdValidation, permissionMiddleware(["clients.delete"]), clientController.deleteClient);
+
+// Client master is company-scoped, not factory-scoped
+router.post("/", clientValidation, permissionMiddleware(["clients.create"]), clientController.createClient);
+router.get("/", commonQueryValidation, permissionMiddleware(["clients.view"]), clientController.getClients);
+router.get("/inactive", commonQueryValidation, inactiveValidation, permissionMiddleware(["clients.view"]), clientController.getInactiveClients);
+router.get("/:clientId", clientIdValidation, permissionMiddleware(["clients.view"]), clientController.getClientById);
+router.put("/:clientId", clientIdValidation, clientValidation, permissionMiddleware(["clients.update"]), clientController.updateClient);
+router.delete("/:clientId", clientIdValidation, permissionMiddleware(["clients.delete"]), clientController.deleteClient);
+router.get("/:clientId/products", clientIdValidation, permissionMiddleware(["clients.view"]), clientController.getClientProducts);
+router.get("/:clientId/slip.pdf", clientIdValidation, permissionMiddleware(["clients.view"]), clientController.getClientSlipPdf);
+router.post("/:clientId/letter.pdf", clientIdValidation, permissionMiddleware(["clients.view"]), clientController.generateClientLetterPdf);
+router.post("/:clientId/re-engage", clientIdValidation, permissionMiddleware(["clients.update"]), clientController.reEngageClient);
+
+// Order history can stay factory-aware because orders themselves are factory-scoped
 router.get("/:clientId/orders", factoryAccessMiddleware, clientIdValidation, commonQueryValidation, permissionMiddleware(["clients.view"]), clientController.getClientOrderHistory);
-router.get("/:clientId/products", factoryAccessMiddleware, clientIdValidation, permissionMiddleware(["clients.view"]), clientController.getClientProducts);
-router.get("/:clientId/slip.pdf", factoryAccessMiddleware, clientIdValidation, permissionMiddleware(["clients.view"]), clientController.getClientSlipPdf);
-router.post("/:clientId/letter.pdf", factoryAccessMiddleware, clientIdValidation, permissionMiddleware(["clients.view"]), clientController.generateClientLetterPdf);
-router.post("/:clientId/re-engage", factoryAccessMiddleware, clientIdValidation, permissionMiddleware(["clients.update"]), clientController.reEngageClient);
 
 module.exports = router;

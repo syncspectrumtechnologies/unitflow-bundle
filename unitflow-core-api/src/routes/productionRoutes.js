@@ -13,7 +13,9 @@ const productionValidation = validate({
     product_id: { required: true, type: "string" },
     quantity: { required: true, type: "number", min: 0.01 },
     produced_at: { type: "date" },
-    remarks: { type: "string" }
+    remarks: { type: "string" },
+    tracked_lines: { type: "array" },
+    consumptions: { type: "array" }
   }
 });
 
