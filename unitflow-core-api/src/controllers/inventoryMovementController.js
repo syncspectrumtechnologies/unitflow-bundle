@@ -9,6 +9,11 @@ const { generateProductBarcodeLabelsToFile } = require("../services/pdf/barcodeL
 const { getPagination, buildPaginationMeta } = require("../utils/pagination");
 const { factoryWhere, requireSingleFactory } = require("../utils/factoryScope");
 
+const TX_OPTS = {
+  maxWait: 10000,
+  timeout: 30000
+};
+
 function parseDateOrNull(v) {
   if (!v) return null;
   const d = new Date(v);
@@ -34,10 +39,14 @@ exports.createIn = async (req, res) => {
 
     const { product_id, quantity, date, remarks, unit_cost, tracked_lines } = req.body;
 
-    if (!product_id) return res.status(400).json({ message: "product_id is required" });
+    if (!product_id) {
+      return res.status(400).json({ message: "product_id is required" });
+    }
 
     const qty = validateQtyPositive(quantity);
-    if (!qty) return res.status(400).json({ message: "quantity must be a number > 0" });
+    if (!qty) {
+      return res.status(400).json({ message: "quantity must be a number > 0" });
+    }
 
     const movementDate = parseDateOrNull(date) || new Date();
 
@@ -45,21 +54,32 @@ exports.createIn = async (req, res) => {
       where: { id: product_id, company_id, is_active: true },
       select: { id: true }
     });
-    if (!product) return res.status(404).json({ message: "Product not found" });
 
-    const { movement } = await prisma.$transaction((tx) => createMovementTx(tx, {
-      company_id,
-      factory_id,
-      product_id,
-      type: "IN",
-      source_type: "MANUAL",
-      source_id: null,
-      date: movementDate,
-      quantity: qty,
-      unit_cost: unit_cost !== undefined && unit_cost !== null ? unit_cost : null,
-      remarks: remarks?.toString() || null,
-      created_by: req.user.id
-    }, { tracked_lines }));
+    if (!product) {
+      return res.status(404).json({ message: "Product not found" });
+    }
+
+    const { movement } = await prisma.$transaction(
+      (tx) =>
+        createMovementTx(
+          tx,
+          {
+            company_id,
+            factory_id,
+            product_id,
+            type: "IN",
+            source_type: "MANUAL",
+            source_id: null,
+            date: movementDate,
+            quantity: qty,
+            unit_cost: unit_cost !== undefined && unit_cost !== null ? unit_cost : null,
+            remarks: remarks?.toString() || null,
+            created_by: req.user.id
+          },
+          { tracked_lines }
+        ),
+      TX_OPTS
+    );
 
     await logActivity({
       company_id,
@@ -74,7 +94,10 @@ exports.createIn = async (req, res) => {
     return res.status(201).json(movement);
   } catch (err) {
     console.error("createIn error:", err);
-    return res.status(500).json({ message: "Internal server error" });
+    return res.status(err?.statusCode || 500).json({
+      message: err?.message || "Internal server error",
+      ...(err?.meta ? err.meta : {})
+    });
   }
 };
 
@@ -85,10 +108,14 @@ exports.createOut = async (req, res) => {
 
     const { product_id, quantity, date, remarks, tracked_lines } = req.body;
 
-    if (!product_id) return res.status(400).json({ message: "product_id is required" });
+    if (!product_id) {
+      return res.status(400).json({ message: "product_id is required" });
+    }
 
     const qty = validateQtyPositive(quantity);
-    if (!qty) return res.status(400).json({ message: "quantity must be a number > 0" });
+    if (!qty) {
+      return res.status(400).json({ message: "quantity must be a number > 0" });
+    }
 
     const movementDate = parseDateOrNull(date) || new Date();
 
@@ -96,25 +123,43 @@ exports.createOut = async (req, res) => {
       where: { id: product_id, company_id, is_active: true },
       select: { id: true }
     });
-    if (!product) return res.status(404).json({ message: "Product not found" });
+
+    if (!product) {
+      return res.status(404).json({ message: "Product not found" });
+    }
 
     let movement;
     try {
-      ({ movement } = await prisma.$transaction((tx) => createMovementTx(tx, {
-        company_id,
-        factory_id,
-        product_id,
-        type: "OUT",
-        source_type: "MANUAL",
-        source_id: null,
-        date: movementDate,
-        quantity: qty,
-        remarks: remarks?.toString() || null,
-        created_by: req.user.id
-      }, { tracked_lines })));
+      ({ movement } = await prisma.$transaction(
+        (tx) =>
+          createMovementTx(
+            tx,
+            {
+              company_id,
+              factory_id,
+              product_id,
+              type: "OUT",
+              source_type: "MANUAL",
+              source_id: null,
+              date: movementDate,
+              quantity: qty,
+              remarks: remarks?.toString() || null,
+              created_by: req.user.id
+            },
+            { tracked_lines }
+          ),
+        TX_OPTS
+      ));
     } catch (err) {
-      if (err?.message === "INSUFFICIENT_STOCK") {
-        return res.status(400).json({ message: "Insufficient stock", ...err.meta });
+      if (
+        err?.message === "INSUFFICIENT_STOCK" ||
+        err?.message === "INSUFFICIENT_TRACKED_STOCK" ||
+        err?.message === "SERIAL_NOT_AVAILABLE"
+      ) {
+        return res.status(err.statusCode || 400).json({
+          message: err.message,
+          ...(err.meta || {})
+        });
       }
       throw err;
     }
@@ -132,7 +177,10 @@ exports.createOut = async (req, res) => {
     return res.status(201).json(movement);
   } catch (err) {
     console.error("createOut error:", err);
-    return res.status(500).json({ message: "Internal server error" });
+    return res.status(err?.statusCode || 500).json({
+      message: err?.message || "Internal server error",
+      ...(err?.meta ? err.meta : {})
+    });
   }
 };
 
@@ -143,11 +191,15 @@ exports.createAdjustment = async (req, res) => {
 
     const { product_id, quantity, date, remarks, tracked_lines } = req.body;
 
-    if (!product_id) return res.status(400).json({ message: "product_id is required" });
+    if (!product_id) {
+      return res.status(400).json({ message: "product_id is required" });
+    }
 
     const q = Number(quantity);
     if (!Number.isFinite(q) || q === 0) {
-      return res.status(400).json({ message: "quantity must be a non-zero number (can be negative)" });
+      return res.status(400).json({
+        message: "quantity must be a non-zero number (can be negative)"
+      });
     }
 
     const movementDate = parseDateOrNull(date) || new Date();
@@ -156,25 +208,43 @@ exports.createAdjustment = async (req, res) => {
       where: { id: product_id, company_id, is_active: true },
       select: { id: true }
     });
-    if (!product) return res.status(404).json({ message: "Product not found" });
+
+    if (!product) {
+      return res.status(404).json({ message: "Product not found" });
+    }
 
     let movement;
     try {
-      ({ movement } = await prisma.$transaction((tx) => createMovementTx(tx, {
-        company_id,
-        factory_id,
-        product_id,
-        type: "ADJUSTMENT",
-        source_type: "MANUAL",
-        source_id: null,
-        date: movementDate,
-        quantity: q,
-        remarks: remarks?.toString() || null,
-        created_by: req.user.id
-      }, { allowNegativeAdjustment: true, tracked_lines })));
+      ({ movement } = await prisma.$transaction(
+        (tx) =>
+          createMovementTx(
+            tx,
+            {
+              company_id,
+              factory_id,
+              product_id,
+              type: "ADJUSTMENT",
+              source_type: "MANUAL",
+              source_id: null,
+              date: movementDate,
+              quantity: q,
+              remarks: remarks?.toString() || null,
+              created_by: req.user.id
+            },
+            { allowNegativeAdjustment: true, tracked_lines }
+          ),
+        TX_OPTS
+      ));
     } catch (err) {
-      if (err?.message === "INSUFFICIENT_STOCK") {
-        return res.status(400).json({ message: "Insufficient stock", ...err.meta });
+      if (
+        err?.message === "INSUFFICIENT_STOCK" ||
+        err?.message === "INSUFFICIENT_TRACKED_STOCK" ||
+        err?.message === "SERIAL_NOT_AVAILABLE"
+      ) {
+        return res.status(err.statusCode || 400).json({
+          message: err.message,
+          ...(err.meta || {})
+        });
       }
       throw err;
     }
@@ -192,7 +262,10 @@ exports.createAdjustment = async (req, res) => {
     return res.status(201).json(movement);
   } catch (err) {
     console.error("createAdjustment error:", err);
-    return res.status(500).json({ message: "Internal server error" });
+    return res.status(err?.statusCode || 500).json({
+      message: err?.message || "Internal server error",
+      ...(err?.meta ? err.meta : {})
+    });
   }
 };
 
@@ -202,8 +275,8 @@ exports.getMovements = async (req, res) => {
     const fw = factoryWhere(req);
 
     const product_id = (req.query.product_id || "").toString().trim();
-    const type = (req.query.type || "").toString().trim(); // IN/OUT/ADJUSTMENT
-    const source_type = (req.query.source_type || "").toString().trim(); // PRODUCTION/ORDER/MANUAL...
+    const type = (req.query.type || "").toString().trim();
+    const source_type = (req.query.source_type || "").toString().trim();
     const date_from = parseDateOrNull(req.query.date_from);
     const date_to = parseDateOrNull(req.query.date_to);
 
@@ -246,14 +319,20 @@ exports.getMovements = async (req, res) => {
 
     const [rows, total] = await Promise.all([
       prisma.inventoryMovement.findMany(query),
-      pagination.enabled && pagination.include_total ? prisma.inventoryMovement.count({ where }) : Promise.resolve(null)
+      pagination.enabled && pagination.include_total
+        ? prisma.inventoryMovement.count({ where })
+        : Promise.resolve(null)
     ]);
 
     if (!pagination.enabled) return res.json(rows);
 
     return res.json({
       items: rows,
-      pagination: buildPaginationMeta({ page: pagination.page, page_size: pagination.page_size, total: total ?? rows.length })
+      pagination: buildPaginationMeta({
+        page: pagination.page,
+        page_size: pagination.page_size,
+        total: total ?? rows.length
+      })
     });
   } catch (err) {
     console.error("getMovements error:", err);
@@ -261,7 +340,6 @@ exports.getMovements = async (req, res) => {
   }
 };
 
-// GET /inventory/stock-summary?product_id=...
 exports.getStockSummary = async (req, res) => {
   try {
     const company_id = req.user.company_id;
@@ -281,11 +359,16 @@ exports.getStockSummary = async (req, res) => {
     }
 
     if (!factory_id && Array.isArray(req.factory_ids) && req.factory_ids.length) {
-      const summary = await stockService.getFactoriesProductSummary(company_id, req.factory_ids, product_id, {
-        date_from,
-        date_to,
-        as_of
-      });
+      const summary = await stockService.getFactoriesProductSummary(
+        company_id,
+        req.factory_ids,
+        product_id,
+        {
+          date_from,
+          date_to,
+          as_of
+        }
+      );
 
       if (!summary) return res.status(404).json({ message: "Product not found" });
       return res.json(summary);
@@ -305,7 +388,6 @@ exports.getStockSummary = async (req, res) => {
   }
 };
 
-// GET /inventory/stock
 exports.getStock = async (req, res) => {
   try {
     const company_id = req.user.company_id;
@@ -316,27 +398,29 @@ exports.getStock = async (req, res) => {
 
     const include_totals = parseBoolean(req.query.include_totals);
 
-    // Optional time-based reporting
     const as_of = parseDateOrNull(req.query.as_of);
     const date_from = parseDateOrNull(req.query.date_from);
     const date_to = parseDateOrNull(req.query.date_to);
 
-    // Safe shortcut:
-    // If frontend needs movement totals for a single product, allow using the same endpoint
-    // with include_totals=true&product_id=...
     if (include_totals) {
       if (!product_id) {
         return res.status(400).json({
-          message: "product_id is required when include_totals=true. Use /inventory/stock for list view and /inventory/stock-summary for product summary."
+          message:
+            "product_id is required when include_totals=true. Use /inventory/stock for list view and /inventory/stock-summary for product summary."
         });
       }
 
       if (!factory_id && Array.isArray(req.factory_ids) && req.factory_ids.length) {
-        const summary = await stockService.getFactoriesProductSummary(company_id, req.factory_ids, product_id, {
-          date_from,
-          date_to,
-          as_of
-        });
+        const summary = await stockService.getFactoriesProductSummary(
+          company_id,
+          req.factory_ids,
+          product_id,
+          {
+            date_from,
+            date_to,
+            as_of
+          }
+        );
         if (!summary) return res.status(404).json({ message: "Product not found" });
         return res.json(summary);
       }
@@ -350,7 +434,6 @@ exports.getStock = async (req, res) => {
       return res.json(summary);
     }
 
-    // If factory_id is null, we are in "all factories" view.
     if (!factory_id && Array.isArray(req.factory_ids) && req.factory_ids.length) {
       const factory_ids = req.factory_ids;
 
@@ -380,7 +463,6 @@ exports.getStock = async (req, res) => {
       return res.json(stock);
     }
 
-    // Single factory view
     if (date_from || date_to) {
       const report = await stockService.getFactoryStockPeriod(company_id, factory_id, {
         category_id: category_id || undefined,
@@ -415,7 +497,12 @@ exports.getStock = async (req, res) => {
 exports.getTrackedStock = async (req, res) => {
   try {
     const company_id = req.user.company_id;
-    const factory_ids = req.factory_id ? [req.factory_id] : (Array.isArray(req.factory_ids) ? req.factory_ids : []);
+    const factory_ids = req.factory_id
+      ? [req.factory_id]
+      : Array.isArray(req.factory_ids)
+      ? req.factory_ids
+      : [];
+
     const rows = await getTrackedStockView(prisma, {
       company_id,
       factory_ids,
@@ -423,6 +510,7 @@ exports.getTrackedStock = async (req, res) => {
       q: (req.query.q || "").toString().trim() || undefined,
       include_zero: parseBoolean(req.query.include_zero)
     });
+
     return res.json(rows);
   } catch (err) {
     console.error("getTrackedStock error:", err);
@@ -438,17 +526,44 @@ exports.resolveBarcode = async (req, res) => {
 
     const productBarcode = await prisma.productBarcode.findFirst({
       where: { company_id, code, is_active: true },
-      include: { product: { select: { id: true, name: true, sku: true, unit: true, tracking_mode: true } } }
+      include: {
+        product: {
+          select: {
+            id: true,
+            name: true,
+            sku: true,
+            unit: true,
+            tracking_mode: true
+          }
+        }
+      }
     });
 
     const serial = await prisma.inventorySerial.findFirst({
       where: { company_id, OR: [{ serial_no: code }, { barcode: code }] },
-      include: { product: { select: { id: true, name: true, tracking_mode: true } }, batch: true }
+      include: {
+        product: {
+          select: {
+            id: true,
+            name: true,
+            tracking_mode: true
+          }
+        },
+        batch: true
+      }
     });
 
     const batch = await prisma.inventoryBatch.findFirst({
       where: { company_id, OR: [{ batch_no: code }, { barcode: code }] },
-      include: { product: { select: { id: true, name: true, tracking_mode: true } } }
+      include: {
+        product: {
+          select: {
+            id: true,
+            name: true,
+            tracking_mode: true
+          }
+        }
+      }
     });
 
     return res.json({ product_barcode: productBarcode, serial, batch });
@@ -464,9 +579,16 @@ exports.getProductBarcodeLabelsPdf = async (req, res) => {
     const product_id = req.params.productId;
     const outPath = buildTempPdfPath("barcode-labels", company_id, req.factory_id || "all", product_id);
     await generateProductBarcodeLabelsToFile({ company_id, product_id, outPath });
-    return streamPdfAndDelete({ res, filePath: outPath, filename: `barcode-labels-${product_id}.pdf`, inline: true });
+    return streamPdfAndDelete({
+      res,
+      filePath: outPath,
+      filename: `barcode-labels-${product_id}.pdf`,
+      inline: true
+    });
   } catch (err) {
     console.error("getProductBarcodeLabelsPdf error:", err);
-    return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
+    return res.status(err.statusCode || 500).json({
+      message: err.message || "Internal server error"
+    });
   }
 };

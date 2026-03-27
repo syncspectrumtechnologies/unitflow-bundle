@@ -36,7 +36,9 @@ async function seedBalanceFromMovementsTx(tx, company_id, factory_id, product_id
     toNumber(adjs._sum.quantity);
 
   return tx.stockBalance.upsert({
-    where: { company_id_factory_id_product_id: { company_id, factory_id, product_id } },
+    where: {
+      company_id_factory_id_product_id: { company_id, factory_id, product_id }
+    },
     update: {},
     create: { company_id, factory_id, product_id, quantity }
   });
@@ -44,8 +46,11 @@ async function seedBalanceFromMovementsTx(tx, company_id, factory_id, product_id
 
 async function ensureBalanceRowTx(tx, company_id, factory_id, product_id) {
   const existing = await tx.stockBalance.findUnique({
-    where: { company_id_factory_id_product_id: { company_id, factory_id, product_id } }
+    where: {
+      company_id_factory_id_product_id: { company_id, factory_id, product_id }
+    }
   });
+
   if (existing) return existing;
   return seedBalanceFromMovementsTx(tx, company_id, factory_id, product_id);
 }
@@ -58,7 +63,9 @@ async function getBalanceTx(tx, company_id, factory_id, product_id) {
 async function incrementBalanceTx(tx, company_id, factory_id, product_id, delta) {
   await ensureBalanceRowTx(tx, company_id, factory_id, product_id);
   return tx.stockBalance.update({
-    where: { company_id_factory_id_product_id: { company_id, factory_id, product_id } },
+    where: {
+      company_id_factory_id_product_id: { company_id, factory_id, product_id }
+    },
     data: { quantity: { increment: delta } }
   });
 }
@@ -78,8 +85,12 @@ async function decrementBalanceIfAvailableTx(tx, company_id, factory_id, product
   return updated > 0;
 }
 
-async function applyBalanceDeltaTx(tx, { company_id, factory_id, product_id, delta, allowNegative = false }) {
+async function applyBalanceDeltaTx(
+  tx,
+  { company_id, factory_id, product_id, delta, allowNegative = false }
+) {
   const numericDelta = toNumber(delta);
+
   if (numericDelta === 0) {
     await ensureBalanceRowTx(tx, company_id, factory_id, product_id);
     return getBalanceTx(tx, company_id, factory_id, product_id);
@@ -91,20 +102,30 @@ async function applyBalanceDeltaTx(tx, { company_id, factory_id, product_id, del
   }
 
   const amount = Math.abs(numericDelta);
+
   if (allowNegative) {
     const row = await tx.stockBalance.update({
-      where: { company_id_factory_id_product_id: { company_id, factory_id, product_id } },
+      where: {
+        company_id_factory_id_product_id: { company_id, factory_id, product_id }
+      },
       data: { quantity: { decrement: amount } }
     });
     return toNumber(row.quantity);
   }
 
   const ok = await decrementBalanceIfAvailableTx(tx, company_id, factory_id, product_id, amount);
+
   if (!ok) {
     const available_stock = await getBalanceTx(tx, company_id, factory_id, product_id);
     const err = new Error("INSUFFICIENT_STOCK");
     err.statusCode = 400;
-    err.meta = { company_id, factory_id, product_id, available_stock, required_stock: amount };
+    err.meta = {
+      company_id,
+      factory_id,
+      product_id,
+      available_stock,
+      required_stock: amount
+    };
     throw err;
   }
 
@@ -141,12 +162,21 @@ async function createMovementTx(tx, data, options = {}) {
 
   let tracking_lines = [];
   const requestedTrackedLines = options.tracked_lines || data.tracked_lines || [];
-  const product = await getProductTrackingProfileTx(tx, { company_id: data.company_id, product_id: data.product_id });
-  if ((product.tracking_mode && product.tracking_mode !== "NONE") || (Array.isArray(requestedTrackedLines) && requestedTrackedLines.length)) {
+
+  const product = await getProductTrackingProfileTx(tx, {
+    company_id: data.company_id,
+    product_id: data.product_id
+  });
+
+  if (
+    (product.tracking_mode && product.tracking_mode !== "NONE") ||
+    (Array.isArray(requestedTrackedLines) && requestedTrackedLines.length)
+  ) {
     tracking_lines = await applyTrackedMovementTx(tx, {
       movement,
       tracked_lines: requestedTrackedLines,
-      allow_negative: allowNegative
+      allow_negative: allowNegative,
+      product
     });
   }
 
@@ -154,7 +184,10 @@ async function createMovementTx(tx, data, options = {}) {
 }
 
 async function updateMovementTx(tx, existing, nextData, options = {}) {
-  const trackingCount = await tx.inventoryMovementTracking.count({ where: { movement_id: existing.id } });
+  const trackingCount = await tx.inventoryMovementTracking.count({
+    where: { movement_id: existing.id }
+  });
+
   if (trackingCount > 0) {
     const err = new Error("TRACKED_MOVEMENT_UPDATE_NOT_SUPPORTED");
     err.statusCode = 400;

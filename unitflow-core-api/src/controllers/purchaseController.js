@@ -11,6 +11,11 @@ const { inferStateCode, resolveSupplyType, normalizeText, round2, toNumber, summ
 const { createMovementTx } = require("../services/inventoryLedgerService");
 const { makePurchaseReceiptNoTx, makeSupplierReturnNoTx } = require("../utils/numbering");
 
+const TX_OPTS = {
+  maxWait: 10000,
+  timeout: 30000
+};
+
 function parseDateOrNull(v) {
   if (!v) return null;
   const d = new Date(v);
@@ -252,7 +257,10 @@ exports.getPurchaseById = async (req, res) => {
     return res.json({ ...purchase, summary: purchaseSummary(purchase) });
   } catch (err) {
     console.error("getPurchaseById error:", err);
-    return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
+    return res.status(err.statusCode || 500).json({
+      message: err.message || "Internal server error",
+      ...(err.meta ? err.meta : {})
+    });
   }
 };
 
@@ -312,13 +320,16 @@ exports.createPurchase = async (req, res) => {
       });
 
       return tx.purchase.findUnique({ where: { id: po.id }, include: purchaseInclude() });
-    });
+    }, TX_OPTS);
 
     await logActivity({ company_id, factory_id, user_id: req.user.id, action: "PURCHASE_CREATED", entity_type: "purchase", entity_id: created.id });
     return res.status(201).json({ ...created, summary: purchaseSummary(created) });
   } catch (err) {
     console.error("createPurchase error:", err);
-    return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
+    return res.status(err.statusCode || 500).json({
+      message: err.message || "Internal server error",
+      ...(err.meta ? err.meta : {})
+    });
   }
 };
 
@@ -379,13 +390,16 @@ exports.updatePurchase = async (req, res) => {
       }
 
       return tx.purchase.findUnique({ where: { id }, include: purchaseInclude() });
-    });
+    }, TX_OPTS);
 
     await logActivity({ company_id, factory_id: updated.factory_id, user_id: req.user.id, action: "PURCHASE_UPDATED", entity_type: "purchase", entity_id: id });
     return res.json({ ...updated, summary: purchaseSummary(updated) });
   } catch (err) {
     console.error("updatePurchase error:", err);
-    return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
+    return res.status(err.statusCode || 500).json({
+      message: err.message || "Internal server error",
+      ...(err.meta ? err.meta : {})
+    });
   }
 };
 
@@ -407,14 +421,17 @@ exports.updatePurchaseStatus = async (req, res) => {
         data: { company_id, purchase_id: id, status: nextStatus, note: note?.toString() || null, created_by: req.user.id }
       });
       return tx.purchase.findUnique({ where: { id }, include: purchaseInclude() });
-    });
+    }, TX_OPTS);
 
     await logActivity({ company_id, factory_id: existing.factory_id, user_id: req.user.id, action: "PURCHASE_STATUS_UPDATED", entity_type: "purchase", entity_id: id });
     return res.json({ ...updated, summary: purchaseSummary(updated) });
   } catch (err) {
     console.error("updatePurchaseStatus error:", err);
-    return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
-  }
+    return res.status(err.statusCode || 500).json({
+      message: err.message || "Internal server error",
+      ...(err.meta ? err.meta : {})
+    }); 
+   }
 };
 
 exports.getPurchaseReceipts = async (req, res) => {
@@ -591,13 +608,16 @@ exports.createPurchaseReceipt = async (req, res) => {
         where: { id: receipt.id },
         include: { purchase: true, items: { include: { product: true, purchase_item: true } } }
       });
-    });
+    }, TX_OPTS);
 
     await logActivity({ company_id, factory_id: purchase.factory_id, user_id: req.user.id, action: "PURCHASE_RECEIPT_CREATED", entity_type: "purchase_receipt", entity_id: created.id });
     return res.status(201).json(created);
   } catch (err) {
     console.error("createPurchaseReceipt error:", err);
-    return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
+    return res.status(err.statusCode || 500).json({
+      message: err.message || "Internal server error",
+      ...(err.meta ? err.meta : {})
+    });
   }
 };
 
@@ -745,13 +765,16 @@ exports.createSupplierReturn = async (req, res) => {
         where: { id: supplierReturn.id },
         include: { purchase: true, items: { include: { product: true, purchase_item: true } } }
       });
-    });
+    }, TX_OPTS);
 
     await logActivity({ company_id, factory_id: purchase.factory_id, user_id: req.user.id, action: "SUPPLIER_RETURN_CREATED", entity_type: "supplier_return", entity_id: created.id });
     return res.status(201).json(created);
   } catch (err) {
     console.error("createSupplierReturn error:", err);
-    return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
+    return res.status(err.statusCode || 500).json({
+      message: err.message || "Internal server error",
+      ...(err.meta ? err.meta : {})
+    });  
   }
 };
 
@@ -913,6 +936,9 @@ exports.getPurchasePdf = async (req, res) => {
     });
   } catch (err) {
     console.error("getPurchasePdf error:", err);
-    return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
-  }
-};
+    return res.status(err.statusCode || 500).json({
+      message: err.message || "Internal server error",
+      ...(err.meta ? err.meta : {})
+    });
+   }
+  };
